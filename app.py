@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 from PIL import Image
 import io
 import tempfile
+from datetime import datetime
 
 # Load environment variables
 load_dotenv()
@@ -28,8 +29,6 @@ genai.configure(api_key=api_key)
 
 speed_adjustment = st.sidebar.slider("Speech Rate Adjustment (%)", min_value=-50, max_value=50, value=-20, step=10)
 speed_str = f"{speed_adjustment:+d}%"
-
-# --- Helper Functions ---
 
 # --- Helper Functions ---
 
@@ -72,7 +71,7 @@ def extract_text_from_image(image_bytes):
         return None
 
 # Import logic from logic.py
-from logic import process_vocabulary, process_passage, save_audio_file, generate_speech_bytes, split_into_sentences
+from logic import process_vocabulary, process_passage, save_audio_file, generate_speech_bytes, split_into_sentences, clean_text_for_reading
 
 async def process_audio_generation(vocab_list, passage_text, rate, vocab_repeats, vocab_silence, passage_repeats, shuffle_vocab):
     """
@@ -119,8 +118,9 @@ with tab1:
     uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "png", "jpeg"])
 
     if uploaded_file is not None:
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Image received: {uploaded_file.name}")
         # Display image
-        st.image(uploaded_file, caption='Uploaded Image', use_container_width=True)
+        st.image(uploaded_file, caption='Uploaded Image')
         
         # Extract Text
         if "extracted_data" not in st.session_state or st.session_state.get("last_uploaded_file") != uploaded_file.name:
@@ -128,6 +128,14 @@ with tab1:
                 # Read file buffer as bytes for caching key
                 image_bytes = uploaded_file.getvalue()
                 data = extract_text_from_image(image_bytes)
+                
+                if data:
+                    print(f"[{datetime.now().strftime('%H:%M:%S')}] Dictation content detected.")
+                    print(f"[{datetime.now().strftime('%H:%M:%S')}] Vocabulary identified: {len(data.get('vocabulary', []))} words.")
+                    print(f"[{datetime.now().strftime('%H:%M:%S')}] Passage identified: {len(data.get('passage', ''))} chars.")
+                else:
+                    print(f"[{datetime.now().strftime('%H:%M:%S')}] Failed to detect dictation content.")
+
                 st.session_state["extracted_data"] = data
                 st.session_state["last_uploaded_file"] = uploaded_file.name
                 # Clear preview cache on new file
@@ -169,8 +177,9 @@ with tab1:
                                 if "preview_cache" not in st.session_state:
                                     st.session_state["preview_cache"] = {}
                                 st.session_state["preview_cache"][preview_key] = path
+                                print(f"[{datetime.now().strftime('%H:%M:%S')}] Preview generated for word: {new_word}")
                              except Exception as e:
-                                 pass
+                                 print(f"[{datetime.now().strftime('%H:%M:%S')}] Failed to generate preview for word {new_word}: {e}")
                         
                         audio_path = st.session_state.get("preview_cache", {}).get(preview_key)
                         if audio_path:
@@ -199,6 +208,8 @@ with tab1:
                 if passage_text:
                     st.markdown("**Sentence Previews**")
                     sentences = split_into_sentences(passage_text)
+                    print(f"[{datetime.now().strftime('%H:%M:%S')}] Passage split into {len(sentences)} sentences.")
+
                     for i, sentence in enumerate(sentences):
                         c1, c2 = st.columns([3, 1])
                         with c1:
@@ -209,13 +220,16 @@ with tab1:
                                  try:
                                     loop = asyncio.new_event_loop()
                                     asyncio.set_event_loop(loop)
-                                    path = loop.run_until_complete(generate_preview_audio(sentence, speed_str))
+                                    # Clean text for reading (punctuation to words)
+                                    spoken_sentence = clean_text_for_reading(sentence)
+                                    path = loop.run_until_complete(generate_preview_audio(spoken_sentence, speed_str))
                                     loop.close()
                                     if "preview_cache" not in st.session_state:
                                         st.session_state["preview_cache"] = {}
                                     st.session_state["preview_cache"][preview_key] = path
-                                 except Exception:
-                                     pass
+                                    print(f"[{datetime.now().strftime('%H:%M:%S')}] Sentence preview generated: {sentence[:20]}...")
+                                 except Exception as e:
+                                     print(f"[{datetime.now().strftime('%H:%M:%S')}] Failed to generate preview for sentence {i}: {e}")
                              
                              audio_path = st.session_state.get("preview_cache", {}).get(preview_key)
                              if audio_path:
@@ -306,6 +320,3 @@ with tab2:
                     st.audio(filepath, format="audio/mp3")
                     with open(filepath, "rb") as f:
                         st.download_button(f"Download {filename}", f, file_name=filename)
-
-
-
