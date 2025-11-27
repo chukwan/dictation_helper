@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+*$py.class
+.env
+.venv
+env/
+venv/
+recordings/
+tmp/
+.pytest_cache/
+test_output.txt
+test_output_utf8.txt

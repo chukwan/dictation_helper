@@ -1,0 +1,8 @@
+streamlit
+google-generativeai
+edge-tts
+pydub
+python-dotenv
+pillow
+pytest
+pytest-asyncio
