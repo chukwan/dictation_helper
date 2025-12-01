@@ -9,11 +9,11 @@ import random
 import shutil
 from datetime import datetime
 
-async def generate_speech_bytes(text, rate):
+async def generate_speech_bytes(text, rate, voice="en-US-AriaNeural"):
     """
     Generates MP3 audio bytes for the given text using edge-tts.
     """
-    communicate = edge_tts.Communicate(text, "en-US-AriaNeural", rate=rate)
+    communicate = edge_tts.Communicate(text, voice, rate=rate)
     mp3_data = b""
     async for chunk in communicate.stream():
         if chunk["type"] == "audio":
@@ -23,25 +23,45 @@ async def generate_speech_bytes(text, rate):
 def create_silence(duration_ms):
     return AudioSegment.silent(duration=duration_ms)
 
-def clean_text_for_reading(text):
+def clean_text_for_reading(text, language="en"):
     """
     Replaces punctuation with spoken words for dictation practice.
+    Supports English ('en') and Traditional Chinese ('zh-tw').
     """
-    replacements = {
-        ".": " period ",
-        ",": " comma ",
-        "?": " question mark ",
-        "!": " exclamation mark ",
-        ";": " semi-colon ",
-        ":": " colon ",
-        "\"": " quote ",
-        "'": " apostrophe ",
-        "-": " hyphen ",
-        "(": " open bracket ",
-        ")": " close bracket "
-    }
+    if language == "zh-tw":
+        replacements = {
+            "，": " 逗號 ",
+            "。": " 句號 ",
+            "？": " 問號 ",
+            "！": " 驚嘆號 ",
+            "；": " 分號 ",
+            "：": " 冒號 ",
+            "「": " 上引號 ",
+            "」": " 下引號 ",
+            "（": " 左括號 ",
+            "）": " 右括號 ",
+            "、": " 頓號 ",
+            ".": " 句號 ", # Handle standard punctuation in Chinese text too
+            ",": " 逗號 ",
+            "?": " 問號 ",
+            "!": " 驚嘆號 "
+        }
+    else:
+        replacements = {
+            ".": " period ",
+            ",": " comma ",
+            "?": " question mark ",
+            "!": " exclamation mark ",
+            ";": " semi-colon ",
+            ":": " colon ",
+            "\"": " quote ",
+            "'": " apostrophe ",
+            "-": " hyphen ",
+            "(": " open bracket ",
+            ")": " close bracket "
+        }
     
-    # Sort keys by length descending to avoid partial replacements (though most are 1 char)
+    # Sort keys by length descending to avoid partial replacements
     sorted_keys = sorted(replacements.keys(), key=len, reverse=True)
     
     # Escape keys for regex
@@ -55,14 +75,13 @@ def clean_text_for_reading(text):
 def split_into_sentences(text):
     """
     Splits text into sentences.
-    Simple split by period, question mark, exclamation mark.
+    Simple split by period, question mark, exclamation mark (English and Chinese).
     """
-    # This regex splits by [.?!] followed by space or end of string, keeping the delimiter.
-    # It's a basic implementation.
-    sentences = re.split(r'(?<=[.?!])\s+', text)
+    # Split by [.?!] or [。？！]
+    sentences = re.split(r'(?<=[.?!。？！])\s*', text)
     return [s.strip() for s in sentences if s.strip()]
 
-async def process_vocabulary(vocab_list, rate, repeats=1, silence_duration_sec=3, shuffle=False):
+async def process_vocabulary(vocab_list, rate, repeats=1, silence_duration_sec=3, shuffle=False, voice="en-US-AriaNeural"):
     """
     Generates audio for vocabulary list with configurable repeats and silence.
     Returns path to generated file.
@@ -80,12 +99,10 @@ async def process_vocabulary(vocab_list, rate, repeats=1, silence_duration_sec=3
     silence = create_silence(silence_duration_sec * 1000)
 
     for i, word in enumerate(processing_list):
-        word_bytes = await generate_speech_bytes(word, rate)
+        word_bytes = await generate_speech_bytes(word, rate, voice=voice)
         word_audio = AudioSegment.from_file(io.BytesIO(word_bytes), format="mp3")
 
         # For each word, repeat 'repeats' times with silence in between
-        # Pattern: (Word + Silence) * repeats
-        
         segment = AudioSegment.empty()
         for _ in range(repeats):
             segment += word_audio + silence
@@ -118,7 +135,7 @@ def save_audio_file(source_path, name, suffix):
     return dest_path
 
 
-async def process_passage(passage_text, rate, sentence_repeats=3):
+async def process_passage(passage_text, rate, sentence_repeats=3, language="en", voice="en-US-AriaNeural"):
     """
     Generates audio for passage with punctuation reading and sentence repetition.
     Returns path to generated file.
@@ -135,10 +152,10 @@ async def process_passage(passage_text, rate, sentence_repeats=3):
 
     for sentence in sentences:
         # Convert punctuation to text
-        spoken_sentence = clean_text_for_reading(sentence)
+        spoken_sentence = clean_text_for_reading(sentence, language=language)
         
         # Generate audio for the modified sentence
-        sentence_bytes = await generate_speech_bytes(spoken_sentence, rate)
+        sentence_bytes = await generate_speech_bytes(spoken_sentence, rate, voice=voice)
         sentence_audio = AudioSegment.from_file(io.BytesIO(sentence_bytes), format="mp3")
 
         # Repeat the sentence

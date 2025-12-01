@@ -35,7 +35,7 @@ speed_str = f"{speed_adjustment:+d}%"
 @st.cache_data(show_spinner=False)
 def extract_text_from_image(image_bytes):
     """
-    Sends image to Gemini Flash to extract vocabulary and passage.
+    Sends image to Gemini Flash to extract vocabulary, passage, and language.
     """
     try:
         model = genai.GenerativeModel('gemini-2.0-flash')
@@ -45,8 +45,10 @@ def extract_text_from_image(image_bytes):
         Return ONLY a raw JSON object (no markdown formatting) with the following structure:
         {
             "vocabulary": ["word1", "word2", ...],
-            "passage": "The full passage text..."
+            "passage": "The full passage text...",
+            "language": "en" 
         }
+        "language" should be "en" for English or "zh-tw" for Traditional Chinese. Default to "en" if unsure.
         If there is only vocabulary, leave "passage" as an empty string.
         If there is only a passage, leave "vocabulary" as an empty list.
         Ensure the JSON is valid.
@@ -73,7 +75,7 @@ def extract_text_from_image(image_bytes):
 # Import logic from logic.py
 from logic import process_vocabulary, process_passage, save_audio_file, generate_speech_bytes, split_into_sentences, clean_text_for_reading
 
-async def process_audio_generation(vocab_list, passage_text, rate, vocab_repeats, vocab_silence, passage_repeats, shuffle_vocab):
+async def process_audio_generation(vocab_list, passage_text, vocab_rate, passage_rate, vocab_repeats, vocab_silence, passage_repeats, shuffle_vocab, language, voice):
     """
     Orchestrates the audio generation process.
     Returns paths to the generated temporary files.
@@ -84,21 +86,21 @@ async def process_audio_generation(vocab_list, passage_text, rate, vocab_repeats
     # --- Process Vocabulary ---
     if vocab_list:
         with st.spinner("Generating Vocabulary Audio..."):
-            vocab_audio_path = await process_vocabulary(vocab_list, rate, repeats=vocab_repeats, silence_duration_sec=vocab_silence, shuffle=shuffle_vocab)
+            vocab_audio_path = await process_vocabulary(vocab_list, vocab_rate, repeats=vocab_repeats, silence_duration_sec=vocab_silence, shuffle=shuffle_vocab, voice=voice)
 
     # --- Process Passage ---
     if passage_text:
         with st.spinner("Generating Passage Audio..."):
-            passage_audio_path = await process_passage(passage_text, rate, sentence_repeats=passage_repeats)
+            passage_audio_path = await process_passage(passage_text, passage_rate, sentence_repeats=passage_repeats, language=language, voice=voice)
 
     return vocab_audio_path, passage_audio_path
 
-async def generate_preview_audio(text, rate):
+async def generate_preview_audio(text, rate, voice):
     """Generates a single preview audio file for a word or sentence."""
     if not text:
         return None
     try:
-        mp3_bytes = await generate_speech_bytes(text, rate)
+        mp3_bytes = await generate_speech_bytes(text, rate, voice=voice)
         # We need a file path for st.audio
         with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as f:
             f.write(mp3_bytes)
@@ -131,6 +133,7 @@ with tab1:
                 
                 if data:
                     print(f"[{datetime.now().strftime('%H:%M:%S')}] Dictation content detected.")
+                    print(f"[{datetime.now().strftime('%H:%M:%S')}] Language detected: {data.get('language', 'en')}")
                     print(f"[{datetime.now().strftime('%H:%M:%S')}] Vocabulary identified: {len(data.get('vocabulary', []))} words.")
                     print(f"[{datetime.now().strftime('%H:%M:%S')}] Passage identified: {len(data.get('passage', ''))} chars.")
                 else:
@@ -144,9 +147,35 @@ with tab1:
         data = st.session_state.get("extracted_data")
 
         if data:
+            # Determine Language and Voice Options
+            detected_lang = data.get("language", "en")
+            
+            voice_options = {}
+            if detected_lang == "zh-tw":
+                voice_options = {
+                    "HsiaoChen (Taiwan, Female, Soft)": "zh-TW-HsiaoChenNeural",
+                    "HsiaoYu (Taiwan, Female, Crisp)": "zh-TW-HsiaoYuNeural",
+                    "YunJhe (Taiwan, Male, Gentle)": "zh-TW-YunJheNeural",
+                    "Xiaoxiao (Mainland, Female, Warm)": "zh-CN-XiaoxiaoNeural"
+                }
+            else:
+                voice_options = {
+                    "Aria (US, Female)": "en-US-AriaNeural",
+                    "Guy (US, Male)": "en-US-GuyNeural",
+                    "Sonia (UK, Female)": "en-GB-SoniaNeural"
+                }
+            
             st.divider()
             st.subheader("Review & Edit Content")
             
+            # Voice Selection UI
+            c_lang, c_voice = st.columns([1, 3])
+            with c_lang:
+                st.info(f"Detected Language: {detected_lang}")
+            with c_voice:
+                selected_voice_label = st.selectbox("Select Voice", list(voice_options.keys()))
+                selected_voice = voice_options[selected_voice_label]
+
             col1, col2 = st.columns(2)
             
             # --- Vocabulary Section ---
@@ -166,13 +195,13 @@ with tab1:
                         updated_vocab_list.append(new_word)
                     with c2:
                         # Preview Button
-                        preview_key = f"vocab_preview_{i}_{new_word}_{speed_str}"
+                        preview_key = f"vocab_preview_{i}_{new_word}_{speed_str}_{selected_voice}"
                         if preview_key not in st.session_state.get("preview_cache", {}):
                              # Generate preview on the fly (async in sync context workaround)
                              try:
                                 loop = asyncio.new_event_loop()
                                 asyncio.set_event_loop(loop)
-                                path = loop.run_until_complete(generate_preview_audio(new_word, speed_str))
+                                path = loop.run_until_complete(generate_preview_audio(new_word, speed_str, selected_voice))
                                 loop.close()
                                 if "preview_cache" not in st.session_state:
                                     st.session_state["preview_cache"] = {}
@@ -204,6 +233,13 @@ with tab1:
                     key="passage_text_area"
                 )
                 
+                st.markdown("**Passage Settings**")
+                passage_repeats = st.number_input("Repeats per sentence", min_value=1, max_value=5, value=3)
+                
+                # Passage Speed Control
+                passage_speed_adj = st.slider("Passage Speed Adjustment (%)", min_value=-50, max_value=50, value=-20, step=10, key="passage_speed")
+                passage_speed_str = f"{passage_speed_adj:+d}%"
+
                 # Passage Previews
                 if passage_text:
                     st.markdown("**Sentence Previews**")
@@ -215,14 +251,14 @@ with tab1:
                         with c1:
                             st.caption(f"{i+1}. {sentence}")
                         with c2:
-                             preview_key = f"passage_preview_{i}_{sentence[:20]}_{speed_str}"
+                             preview_key = f"passage_preview_{i}_{sentence[:20]}_{passage_speed_str}_{selected_voice}"
                              if preview_key not in st.session_state.get("preview_cache", {}):
                                  try:
                                     loop = asyncio.new_event_loop()
                                     asyncio.set_event_loop(loop)
                                     # Clean text for reading (punctuation to words)
-                                    spoken_sentence = clean_text_for_reading(sentence)
-                                    path = loop.run_until_complete(generate_preview_audio(spoken_sentence, speed_str))
+                                    spoken_sentence = clean_text_for_reading(sentence, language=detected_lang)
+                                    path = loop.run_until_complete(generate_preview_audio(spoken_sentence, passage_speed_str, selected_voice))
                                     loop.close()
                                     if "preview_cache" not in st.session_state:
                                         st.session_state["preview_cache"] = {}
@@ -234,10 +270,6 @@ with tab1:
                              audio_path = st.session_state.get("preview_cache", {}).get(preview_key)
                              if audio_path:
                                 st.audio(audio_path, format="audio/mp3")
-
-                st.markdown("---")
-                st.markdown("**Passage Settings**")
-                passage_repeats = st.number_input("Repeats per sentence", min_value=1, max_value=5, value=3)
 
             st.divider()
             
@@ -252,9 +284,9 @@ with tab1:
                         asyncio.set_event_loop(loop)
                     
                     if loop.is_running():
-                        vocab_path, passage_path = loop.run_until_complete(process_audio_generation(vocab_list, passage_text, speed_str, vocab_repeats, vocab_silence, passage_repeats, shuffle_vocab))
+                        vocab_path, passage_path = loop.run_until_complete(process_audio_generation(vocab_list, passage_text, speed_str, passage_speed_str, vocab_repeats, vocab_silence, passage_repeats, shuffle_vocab, detected_lang, selected_voice))
                     else:
-                         vocab_path, passage_path = loop.run_until_complete(process_audio_generation(vocab_list, passage_text, speed_str, vocab_repeats, vocab_silence, passage_repeats, shuffle_vocab))
+                         vocab_path, passage_path = loop.run_until_complete(process_audio_generation(vocab_list, passage_text, speed_str, passage_speed_str, vocab_repeats, vocab_silence, passage_repeats, shuffle_vocab, detected_lang, selected_voice))
 
                     st.session_state["generated_vocab_path"] = vocab_path
                     st.session_state["generated_passage_path"] = passage_path
