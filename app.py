@@ -49,6 +49,12 @@ def extract_text_from_image(image_bytes):
             "language": "en" 
         }
         "language" should be "en" for English or "zh-tw" for Traditional Chinese. Default to "en" if unsure.
+        
+        IMPORTANT FOR CHINESE TEXT:
+        - Extract the Chinese characters (Hanzi) ONLY. 
+        - Do NOT extract Pinyin or phonetic guides. 
+        - If the image shows both Hanzi and Pinyin, extract ONLY the Hanzi.
+        
         If there is only vocabulary, leave "passage" as an empty string.
         If there is only a passage, leave "vocabulary" as an empty list.
         Ensure the JSON is valid.
@@ -75,7 +81,7 @@ def extract_text_from_image(image_bytes):
 # Import logic from logic.py
 from logic import process_vocabulary, process_passage, save_audio_file, generate_speech_bytes, split_into_sentences, clean_text_for_reading
 
-async def process_audio_generation(vocab_list, passage_text, vocab_rate, passage_rate, vocab_repeats, vocab_silence, passage_repeats, shuffle_vocab, language, voice):
+async def process_audio_generation(vocab_list, passage_text, vocab_rate, passage_rate, vocab_repeats, vocab_silence, passage_repeats, shuffle_vocab, language, voice, provider):
     """
     Orchestrates the audio generation process.
     Returns paths to the generated temporary files.
@@ -86,26 +92,27 @@ async def process_audio_generation(vocab_list, passage_text, vocab_rate, passage
     # --- Process Vocabulary ---
     if vocab_list:
         with st.spinner("Generating Vocabulary Audio..."):
-            vocab_audio_path = await process_vocabulary(vocab_list, vocab_rate, repeats=vocab_repeats, silence_duration_sec=vocab_silence, shuffle=shuffle_vocab, voice=voice)
+            vocab_audio_path = await process_vocabulary(vocab_list, vocab_rate, repeats=vocab_repeats, silence_duration_sec=vocab_silence, shuffle=shuffle_vocab, voice=voice, provider=provider)
 
     # --- Process Passage ---
     if passage_text:
         with st.spinner("Generating Passage Audio..."):
-            passage_audio_path = await process_passage(passage_text, passage_rate, sentence_repeats=passage_repeats, language=language, voice=voice)
+            passage_audio_path = await process_passage(passage_text, passage_rate, sentence_repeats=passage_repeats, language=language, voice=voice, provider=provider)
 
     return vocab_audio_path, passage_audio_path
 
-async def generate_preview_audio(text, rate, voice):
+async def generate_preview_audio(text, rate, voice, provider):
     """Generates a single preview audio file for a word or sentence."""
     if not text:
         return None
     try:
-        mp3_bytes = await generate_speech_bytes(text, rate, voice=voice)
+        mp3_bytes = await generate_speech_bytes(text, rate, voice=voice, provider=provider)
         # We need a file path for st.audio
         with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as f:
             f.write(mp3_bytes)
             return f.name
-    except Exception:
+    except Exception as e:
+        print(f"Preview generation failed: {e}")
         return None
 
 # --- Main UI ---
@@ -150,29 +157,57 @@ with tab1:
             # Determine Language and Voice Options
             detected_lang = data.get("language", "en")
             
-            voice_options = {}
-            if detected_lang == "zh-tw":
-                voice_options = {
-                    "HsiaoChen (Taiwan, Female, Soft)": "zh-TW-HsiaoChenNeural",
-                    "HsiaoYu (Taiwan, Female, Crisp)": "zh-TW-HsiaoYuNeural",
-                    "YunJhe (Taiwan, Male, Gentle)": "zh-TW-YunJheNeural",
-                    "Xiaoxiao (Mainland, Female, Warm)": "zh-CN-XiaoxiaoNeural"
-                }
-            else:
-                voice_options = {
-                    "Aria (US, Female)": "en-US-AriaNeural",
-                    "Guy (US, Male)": "en-US-GuyNeural",
-                    "Sonia (UK, Female)": "en-GB-SoniaNeural"
-                }
-            
             st.divider()
             st.subheader("Review & Edit Content")
             
-            # Voice Selection UI
-            c_lang, c_voice = st.columns([1, 3])
+            # --- TTS Settings ---
+            c_lang, c_provider, c_voice = st.columns([1, 2, 3])
+            
             with c_lang:
-                st.info(f"Detected Language: {detected_lang}")
+                st.info(f"Detected: {detected_lang}")
+                
+            with c_provider:
+                tts_provider = st.radio("TTS Provider", ["Edge TTS (Free)", "Google Cloud TTS"], horizontal=True)
+                provider_code = "google" if tts_provider == "Google Cloud TTS" else "edge"
+
             with c_voice:
+                voice_options = {}
+                if provider_code == "edge":
+                    if detected_lang == "zh-tw":
+                        voice_options = {
+                            "HsiaoChen (Taiwan, Female, Soft)": "zh-TW-HsiaoChenNeural",
+                            "HsiaoYu (Taiwan, Female, Crisp)": "zh-TW-HsiaoYuNeural",
+                            "YunJhe (Taiwan, Male, Gentle)": "zh-TW-YunJheNeural",
+                            "Xiaoxiao (Mainland, Female, Warm)": "zh-CN-XiaoxiaoNeural",
+                            "Yunxi (Mainland, Male, Calm)": "zh-CN-YunxiNeural",
+                            "Xiaoyi (Mainland, Female, Gentle)": "zh-CN-XiaoyiNeural",
+                            "Yunjian (Mainland, Male, Sports)": "zh-CN-YunjianNeural"
+                        }
+                    else:
+                        voice_options = {
+                            "Aria (US, Female)": "en-US-AriaNeural",
+                            "Guy (US, Male)": "en-US-GuyNeural",
+                            "Sonia (UK, Female)": "en-GB-SoniaNeural"
+                        }
+                else: # Google
+                    if detected_lang == "zh-tw":
+                        voice_options = {
+                            "Standard A (Mainland, Female)": "cmn-CN-Standard-A",
+                            "Standard B (Mainland, Male)": "cmn-CN-Standard-B",
+                            "Standard C (Mainland, Male)": "cmn-CN-Standard-C",
+                            "Standard D (Mainland, Female)": "cmn-CN-Standard-D",
+                            "TW Standard A (Taiwan, Female)": "cmn-TW-Standard-A",
+                            "TW Standard B (Taiwan, Male)": "cmn-TW-Standard-B",
+                            "TW Standard C (Taiwan, Male)": "cmn-TW-Standard-C"
+                        }
+                    else:
+                        voice_options = {
+                            "Standard A (US, Male)": "en-US-Standard-A",
+                            "Standard B (US, Male)": "en-US-Standard-B",
+                            "Standard C (US, Female)": "en-US-Standard-C",
+                            "Standard D (US, Male)": "en-US-Standard-D"
+                        }
+
                 selected_voice_label = st.selectbox("Select Voice", list(voice_options.keys()))
                 selected_voice = voice_options[selected_voice_label]
 
@@ -195,20 +230,22 @@ with tab1:
                         updated_vocab_list.append(new_word)
                     with c2:
                         # Preview Button
-                        preview_key = f"vocab_preview_{i}_{new_word}_{speed_str}_{selected_voice}"
+                        preview_key = f"vocab_preview_{i}_{new_word}_{speed_str}_{selected_voice}_{provider_code}"
                         if preview_key not in st.session_state.get("preview_cache", {}):
                              # Generate preview on the fly (async in sync context workaround)
                              try:
                                 loop = asyncio.new_event_loop()
                                 asyncio.set_event_loop(loop)
-                                path = loop.run_until_complete(generate_preview_audio(new_word, speed_str, selected_voice))
+                                path = loop.run_until_complete(generate_preview_audio(new_word, speed_str, selected_voice, provider_code))
                                 loop.close()
+                                
                                 if "preview_cache" not in st.session_state:
                                     st.session_state["preview_cache"] = {}
                                 st.session_state["preview_cache"][preview_key] = path
                                 print(f"[{datetime.now().strftime('%H:%M:%S')}] Preview generated for word: {new_word}")
                              except Exception as e:
                                  print(f"[{datetime.now().strftime('%H:%M:%S')}] Failed to generate preview for word {new_word}: {e}")
+                                 st.caption("⚠️ Preview unavailable")
                         
                         audio_path = st.session_state.get("preview_cache", {}).get(preview_key)
                         if audio_path:
@@ -251,14 +288,14 @@ with tab1:
                         with c1:
                             st.caption(f"{i+1}. {sentence}")
                         with c2:
-                             preview_key = f"passage_preview_{i}_{sentence[:20]}_{passage_speed_str}_{selected_voice}"
+                             preview_key = f"passage_preview_{i}_{sentence[:20]}_{passage_speed_str}_{selected_voice}_{provider_code}"
                              if preview_key not in st.session_state.get("preview_cache", {}):
                                  try:
                                     loop = asyncio.new_event_loop()
                                     asyncio.set_event_loop(loop)
                                     # Clean text for reading (punctuation to words)
                                     spoken_sentence = clean_text_for_reading(sentence, language=detected_lang)
-                                    path = loop.run_until_complete(generate_preview_audio(spoken_sentence, passage_speed_str, selected_voice))
+                                    path = loop.run_until_complete(generate_preview_audio(spoken_sentence, passage_speed_str, selected_voice, provider_code))
                                     loop.close()
                                     if "preview_cache" not in st.session_state:
                                         st.session_state["preview_cache"] = {}
@@ -284,9 +321,9 @@ with tab1:
                         asyncio.set_event_loop(loop)
                     
                     if loop.is_running():
-                        vocab_path, passage_path = loop.run_until_complete(process_audio_generation(vocab_list, passage_text, speed_str, passage_speed_str, vocab_repeats, vocab_silence, passage_repeats, shuffle_vocab, detected_lang, selected_voice))
+                        vocab_path, passage_path = loop.run_until_complete(process_audio_generation(vocab_list, passage_text, speed_str, passage_speed_str, vocab_repeats, vocab_silence, passage_repeats, shuffle_vocab, detected_lang, selected_voice, provider_code))
                     else:
-                         vocab_path, passage_path = loop.run_until_complete(process_audio_generation(vocab_list, passage_text, speed_str, passage_speed_str, vocab_repeats, vocab_silence, passage_repeats, shuffle_vocab, detected_lang, selected_voice))
+                         vocab_path, passage_path = loop.run_until_complete(process_audio_generation(vocab_list, passage_text, speed_str, passage_speed_str, vocab_repeats, vocab_silence, passage_repeats, shuffle_vocab, detected_lang, selected_voice, provider_code))
 
                     st.session_state["generated_vocab_path"] = vocab_path
                     st.session_state["generated_passage_path"] = passage_path

@@ -10,3 +10,4 @@ tmp/
 .pytest_cache/
 test_output.txt
 test_output_utf8.txt
+tests/test-materials/

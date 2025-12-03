@@ -9,16 +9,61 @@ import random
 import shutil
 from datetime import datetime
 
-async def generate_speech_bytes(text, rate, voice="en-US-AriaNeural"):
+import requests
+import base64
+import json
+
+async def generate_speech_bytes(text, rate, voice="en-US-AriaNeural", provider="edge"):
     """
-    Generates MP3 audio bytes for the given text using edge-tts.
+    Generates MP3 audio bytes for the given text using edge-tts or Google Cloud TTS.
     """
-    communicate = edge_tts.Communicate(text, voice, rate=rate)
-    mp3_data = b""
-    async for chunk in communicate.stream():
-        if chunk["type"] == "audio":
-            mp3_data += chunk["data"]
-    return mp3_data
+    if provider == "google":
+        api_key = os.getenv("GOOGLE_API_KEY")
+        if not api_key:
+            raise ValueError("GOOGLE_API_KEY not found.")
+            
+        url = f"https://texttospeech.googleapis.com/v1/text:synthesize?key={api_key}"
+        
+        # Google TTS doesn't support "rate" like "+50%" directly in the same way.
+        # It uses "speakingRate" (0.25 to 4.0).
+        # We need to map our rate string (e.g. "-20%") to a float.
+        # Default is 1.0.
+        speaking_rate = 1.0
+        try:
+            if rate.endswith("%"):
+                # "-20%" -> -0.2 -> 0.8
+                percent = int(rate.strip("%"))
+                speaking_rate = 1.0 + (percent / 100.0)
+        except:
+            pass
+            
+        # Clamp rate
+        speaking_rate = max(0.25, min(4.0, speaking_rate))
+
+        data = {
+            "input": {"text": text},
+            "voice": {"languageCode": voice.split("-")[0] + "-" + voice.split("-")[1], "name": voice},
+            "audioConfig": {"audioEncoding": "MP3", "speakingRate": speaking_rate}
+        }
+        
+        # Run synchronous request in async function
+        loop = asyncio.get_event_loop()
+        response = await loop.run_in_executor(None, lambda: requests.post(url, headers={"Content-Type": "application/json"}, data=json.dumps(data)))
+        
+        if response.status_code == 200:
+            json_response = response.json()
+            return base64.b64decode(json_response["audioContent"])
+        else:
+            raise Exception(f"Google TTS API failed: {response.text}")
+
+    else:
+        # Edge TTS
+        communicate = edge_tts.Communicate(text, voice, rate=rate)
+        mp3_data = b""
+        async for chunk in communicate.stream():
+            if chunk["type"] == "audio":
+                mp3_data += chunk["data"]
+        return mp3_data
 
 def create_silence(duration_ms):
     return AudioSegment.silent(duration=duration_ms)
@@ -81,7 +126,7 @@ def split_into_sentences(text):
     sentences = re.split(r'(?<=[.?!。？！])\s*', text)
     return [s.strip() for s in sentences if s.strip()]
 
-async def process_vocabulary(vocab_list, rate, repeats=1, silence_duration_sec=3, shuffle=False, voice="en-US-AriaNeural"):
+async def process_vocabulary(vocab_list, rate, repeats=1, silence_duration_sec=3, shuffle=False, voice="en-US-AriaNeural", provider="edge"):
     """
     Generates audio for vocabulary list with configurable repeats and silence.
     Returns path to generated file.
@@ -99,7 +144,7 @@ async def process_vocabulary(vocab_list, rate, repeats=1, silence_duration_sec=3
     silence = create_silence(silence_duration_sec * 1000)
 
     for i, word in enumerate(processing_list):
-        word_bytes = await generate_speech_bytes(word, rate, voice=voice)
+        word_bytes = await generate_speech_bytes(word, rate, voice=voice, provider=provider)
         word_audio = AudioSegment.from_file(io.BytesIO(word_bytes), format="mp3")
 
         # For each word, repeat 'repeats' times with silence in between
@@ -135,7 +180,7 @@ def save_audio_file(source_path, name, suffix):
     return dest_path
 
 
-async def process_passage(passage_text, rate, sentence_repeats=3, language="en", voice="en-US-AriaNeural"):
+async def process_passage(passage_text, rate, sentence_repeats=3, language="en", voice="en-US-AriaNeural", provider="edge"):
     """
     Generates audio for passage with punctuation reading and sentence repetition.
     Returns path to generated file.
@@ -155,7 +200,7 @@ async def process_passage(passage_text, rate, sentence_repeats=3, language="en",
         spoken_sentence = clean_text_for_reading(sentence, language=language)
         
         # Generate audio for the modified sentence
-        sentence_bytes = await generate_speech_bytes(spoken_sentence, rate, voice=voice)
+        sentence_bytes = await generate_speech_bytes(spoken_sentence, rate, voice=voice, provider=provider)
         sentence_audio = AudioSegment.from_file(io.BytesIO(sentence_bytes), format="mp3")
 
         # Repeat the sentence

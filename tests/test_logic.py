@@ -52,12 +52,16 @@ async def test_process_vocabulary():
             mock_empty.return_value.__add__.return_value = mock_empty.return_value
             
             # Test with shuffle=False and specific voice
-            path = await process_vocabulary(["test"], "+0%", repeats=2, silence_duration_sec=1, shuffle=False, voice="zh-TW-HsiaoChenNeural")
+            path = await process_vocabulary(["test"], "+0%", repeats=2, silence_duration_sec=1, shuffle=False, voice="zh-TW-HsiaoChenNeural", provider="edge")
             assert mock_gen.call_count == 1
-            # Verify voice was passed
-            mock_gen.assert_called_with("test", "+0%", voice="zh-TW-HsiaoChenNeural")
+            # Verify voice and provider passed
+            mock_gen.assert_called_with("test", "+0%", voice="zh-TW-HsiaoChenNeural", provider="edge")
             assert path is not None
             
+            # Test with Google provider
+            path_google = await process_vocabulary(["test"], "+0%", repeats=1, silence_duration_sec=1, shuffle=False, voice="cmn-CN-Standard-A", provider="google")
+            mock_gen.assert_called_with("test", "+0%", voice="cmn-CN-Standard-A", provider="google")
+
             # Test with shuffle=True (mock random.shuffle)
             with patch('random.shuffle') as mock_shuffle:
                 await process_vocabulary(["a", "b", "c"], "+0%", shuffle=True)
@@ -97,11 +101,11 @@ async def test_process_passage():
             mock_empty.return_value.__add__.return_value = mock_empty.return_value
 
             # Test with Chinese language and voice
-            path = await process_passage("你好。世界。", "+0%", sentence_repeats=2, language="zh-tw", voice="zh-TW-HsiaoChenNeural")
+            path = await process_passage("你好。世界。", "+0%", sentence_repeats=2, language="zh-tw", voice="zh-TW-HsiaoChenNeural", provider="edge")
             
             # Should be called twice (once for each sentence)
             assert mock_gen.call_count == 2
             # Verify voice was passed
-            mock_gen.assert_called_with("世界 句號", "+0%", voice="zh-TW-HsiaoChenNeural") # Check last call
+            mock_gen.assert_called_with("世界 句號", "+0%", voice="zh-TW-HsiaoChenNeural", provider="edge") # Check last call
             assert path is not None
             assert "passage_reading.mp3" in path
