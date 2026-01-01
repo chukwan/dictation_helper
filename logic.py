@@ -215,3 +215,100 @@ async def process_passage(passage_text, rate, sentence_repeats=3, language="en",
     passage_audio_path = os.path.join(temp_dir, "passage_reading.mp3")
     combined_passage_audio.export(passage_audio_path, format="mp3")
     return passage_audio_path
+
+# --- New Conversation Logic ---
+
+import google.generativeai as genai
+
+def analyze_transcript(text, num_speakers, language_code="zh-HK"):
+    """
+    Uses Gemini to analyze the transcript and split it into speaker segments.
+    """
+    try:
+        model = genai.GenerativeModel('gemini-3-flash-preview')
+        
+        prompt = f"""
+        Analyze the following text and split it into a conversation between up to {num_speakers} speakers.
+        The text might be a script (e.g., "A: Hello") or just a story.
+        
+        Target Language: {language_code}
+        
+        Return a RAW JSON list of objects (no markdown blocks). Each object must have:
+        - "speaker_id": integer (1 to {num_speakers})
+        - "speaker": string (name of the speaker if detected, e.g. "Teacher", "Mary", otherwise "Speaker 1")
+        - "text": string (the spoken content)
+        
+        Rules:
+        1. If the text has explicit labels (like "A:", "Bob:"), use them to assign speaker IDs consistently.
+        2. If no labels, try to infer speaker changes from context.
+        3. Do not include stage directions or non-spoken text in the "text" field.
+        
+        Input Text:
+        {text}
+        """
+        
+        response = model.generate_content(prompt)
+        content = response.text
+        
+        # Clean markdown
+        if content.startswith("```json"):
+            content = content[7:]
+        if content.endswith("```"):
+            content = content[:-3]
+            
+        return json.loads(content)
+        
+    except Exception as e:
+        print(f"Error in analyze_transcript: {e}")
+        return []
+
+async def generate_conversation_audio(segments, language_code="zh-HK", provider="edge"):
+    """
+    Generates audio for a conversation list.
+    segments: [{"speaker_id": 1, "text": "Hello"}, ...]
+    """
+    if not segments:
+        return None
+        
+    # Define Voice Maps (limit to ~3-4 distinct voices per lang for now)
+    # Edge TTS voices
+    VOICE_MAP_EDGE = {
+        "zh-HK": ["zh-HK-HiuGaaiNeural", "zh-HK-WanLungNeural", "zh-HK-HiuMinNeural"],
+        "en-US": ["en-US-AriaNeural", "en-US-GuyNeural", "en-US-JennyNeural", "en-US-EricNeural"],
+        "zh-CN": ["zh-CN-XiaoxiaoNeural", "zh-CN-YunxiNeural", "zh-CN-XiaoyiNeural", "zh-CN-YunjianNeural"],
+    }
+    
+    # Fallback to English if not found
+    available_voices = VOICE_MAP_EDGE.get(language_code, VOICE_MAP_EDGE["en-US"])
+    
+    temp_dir = tempfile.gettempdir()
+    combined_audio = AudioSegment.empty()
+    pause = AudioSegment.silent(duration=300) # 300ms pause between turns
+    
+    for seg in segments:
+        text = seg.get("text", "")
+        if not text:
+            continue
+            
+        speaker_id = seg.get("speaker_id", 1)
+        
+        # Select voice based on speaker_id (round-robin)
+        # speaker_id 1 -> index 0
+        voice_index = (speaker_id - 1) % len(available_voices)
+        selected_voice = available_voices[voice_index]
+        
+        try:
+            # Generate audio for this segment
+            # We use default rate "+0%" for conversation
+            audio_bytes = await generate_speech_bytes(text, "+0%", voice=selected_voice, provider=provider)
+            segment_audio = AudioSegment.from_file(io.BytesIO(audio_bytes), format="mp3")
+            
+            combined_audio += segment_audio + pause
+            
+        except Exception as e:
+            print(f"Failed to generate segment for {speaker_id}: {e}")
+            continue
+
+    output_path = os.path.join(temp_dir, "conversation_output.mp3")
+    combined_audio.export(output_path, format="mp3")
+    return output_path
