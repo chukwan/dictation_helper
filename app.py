@@ -37,7 +37,12 @@ speed_str = f"{speed_adjustment:+d}%"
 # --- Helper Functions ---
 
 # Import logic from logic.py
-from logic import process_vocabulary, process_passage, save_audio_file, generate_speech_bytes, split_into_sentences, clean_text_for_reading, extract_text_from_image, process_audio_generation
+from logic import (
+    process_vocabulary, process_passage, save_audio_file, generate_speech_bytes, 
+    split_into_sentences, clean_text_for_reading, extract_text_from_image, 
+    process_audio_generation, analyze_transcript, generate_conversation_audio
+)
+
 
 # Wrap extract_text_from_image with cache for Streamlit
 @st.cache_data(show_spinner=False)
@@ -62,7 +67,83 @@ async def generate_preview_audio(text, rate, voice, provider):
 
 st.title("Dictation Buddy 🎧")
 
-tab1, tab2 = st.tabs(["Create Practice", "Saved Sessions"])
+tab1, tab2, tab3 = st.tabs(["Create Practice", "Recordings Library", "Conversation Generator"])
+
+with tab3:
+    st.header("Conversation Generator")
+    st.markdown("Generate multi-speaker audio from a transcript.")
+    
+    col_input, col_settings = st.columns([2, 1])
+    
+    with col_settings:
+        conv_lang = st.selectbox("Language", ["Cantonese", "English", "Mandarin"], index=0)
+        num_speakers = st.number_input("Number of Speakers", min_value=1, max_value=5, value=2)
+        
+        # Map friendly name to code
+        lang_code = "zh-HK"
+        if conv_lang == "English": lang_code = "en-US"
+        elif conv_lang == "Mandarin": lang_code = "zh-CN"
+        
+        conv_provider = st.radio("Provider", ["Edge TTS (Free)", "Google Cloud TTS"], key="conv_provider")
+        conv_provider_code = "google" if conv_provider == "Google Cloud TTS" else "edge"
+
+    with col_input:
+        transcript_text = st.text_area("Enter Transcript / Dialogue", height=300,  placeholder="Teacher: Hello everyone.\nStudent: Good morning!")
+    
+    if st.button("Analyze Transcript", type="primary"):
+        if not transcript_text:
+            st.warning("Please enter some text.")
+        else:
+            with st.spinner("Analyzing speakers..."):
+                segments = analyze_transcript(transcript_text, num_speakers, lang_code)
+                st.session_state["conv_segments"] = segments
+                st.session_state["conv_lang"] = lang_code # Store for generation
+    
+    # Display Segments if available
+    if "conv_segments" in st.session_state and st.session_state["conv_segments"]:
+        st.divider()
+        st.subheader("Detected Segments")
+        
+        segments = st.session_state["conv_segments"]
+        updated_segments = []
+        
+        for i, seg in enumerate(segments):
+            c1, c2 = st.columns([1, 4])
+            with c1:
+                speaker_label = st.text_input(f"Speaker", value=seg.get("speaker", f"Speaker {seg.get('speaker_id', '?')}"), key=f"s_lbl_{i}")
+            with c2:
+                text_content = st.text_area(f"Text", value=seg.get("text", ""), key=f"s_txt_{i}", height=70)
+            
+            updated_segments.append({"speaker": speaker_label, "text": text_content, "speaker_id": seg.get("speaker_id")})
+        
+        st.session_state["conv_segments"] = updated_segments
+
+        if st.button("Generate Conversation Audio", type="primary"):
+            with st.spinner("Synthesizing conversation..."):
+                try:
+                    # Async handling
+                    try:
+                        loop = asyncio.get_event_loop()
+                    except RuntimeError:
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                    
+                    final_audio_path = loop.run_until_complete(generate_conversation_audio(updated_segments, lang_code, conv_provider_code))
+                    
+                    if final_audio_path:
+                        st.session_state["conv_audio_path"] = final_audio_path
+                        st.success("Conversation Audio Generated!")
+                    else:
+                        st.error("Failed to generate audio.")
+                        
+                except Exception as e:
+                     st.error(f"Error: {e}")
+
+        if st.session_state.get("conv_audio_path"):
+            st.audio(st.session_state["conv_audio_path"], format="audio/mp3")
+            with open(st.session_state["conv_audio_path"], "rb") as f:
+                st.download_button("Download Conversation", f, file_name="conversation.mp3")
+
 
 with tab1:
     # Check if a session is currently loaded

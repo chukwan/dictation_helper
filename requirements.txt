@@ -8,3 +8,4 @@ pytest
 pytest-asyncio
 gTTS
 requests
+audioop-lts
