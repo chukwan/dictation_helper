@@ -10,9 +10,13 @@ from PIL import Image
 import io
 import tempfile
 from datetime import datetime
+import database
 
 # Load environment variables
 load_dotenv()
+
+# Initialize Database
+database.init_db()
 
 # --- Configuration ---
 st.set_page_config(page_title="Dictation Buddy", page_icon="📝", layout="wide")
@@ -32,74 +36,13 @@ speed_str = f"{speed_adjustment:+d}%"
 
 # --- Helper Functions ---
 
-@st.cache_data(show_spinner=False)
-def extract_text_from_image(image_bytes):
-    """
-    Sends image to Gemini Flash to extract vocabulary, passage, and language.
-    """
-    try:
-        model = genai.GenerativeModel('gemini-2.0-flash')
-        
-        prompt = """
-        Analyze this image and extract the text for a dictation practice session.
-        Return ONLY a raw JSON object (no markdown formatting) with the following structure:
-        {
-            "vocabulary": ["word1", "word2", ...],
-            "passage": "The full passage text...",
-            "language": "en" 
-        }
-        "language" should be "en" for English or "zh-tw" for Traditional Chinese. Default to "en" if unsure.
-        
-        IMPORTANT FOR CHINESE TEXT:
-        - Extract the Chinese characters (Hanzi) ONLY. 
-        - Do NOT extract Pinyin or phonetic guides. 
-        - If the image shows both Hanzi and Pinyin, extract ONLY the Hanzi.
-        
-        If there is only vocabulary, leave "passage" as an empty string.
-        If there is only a passage, leave "vocabulary" as an empty list.
-        Ensure the JSON is valid.
-        """
-        
-        # Convert bytes back to image for Gemini if needed, or pass bytes directly if supported.
-        # Gemini Python SDK supports PIL Image.
-        image = Image.open(io.BytesIO(image_bytes))
-        
-        response = model.generate_content([prompt, image])
-        text = response.text
-        
-        # Clean up potential markdown code blocks
-        if text.startswith("```json"):
-            text = text[7:]
-        if text.endswith("```"):
-            text = text[:-3]
-            
-        return json.loads(text)
-    except Exception as e:
-        st.error(f"Error extracting text: {e}")
-        return None
-
 # Import logic from logic.py
-from logic import process_vocabulary, process_passage, save_audio_file, generate_speech_bytes, split_into_sentences, clean_text_for_reading
+from logic import process_vocabulary, process_passage, save_audio_file, generate_speech_bytes, split_into_sentences, clean_text_for_reading, extract_text_from_image, process_audio_generation
 
-async def process_audio_generation(vocab_list, passage_text, vocab_rate, passage_rate, vocab_repeats, vocab_silence, passage_repeats, shuffle_vocab, language, voice, provider):
-    """
-    Orchestrates the audio generation process.
-    Returns paths to the generated temporary files.
-    """
-    vocab_audio_path = None
-    passage_audio_path = None
-
-    # --- Process Vocabulary ---
-    if vocab_list:
-        with st.spinner("Generating Vocabulary Audio..."):
-            vocab_audio_path = await process_vocabulary(vocab_list, vocab_rate, repeats=vocab_repeats, silence_duration_sec=vocab_silence, shuffle=shuffle_vocab, voice=voice, provider=provider)
-
-    # --- Process Passage ---
-    if passage_text:
-        with st.spinner("Generating Passage Audio..."):
-            passage_audio_path = await process_passage(passage_text, passage_rate, sentence_repeats=passage_repeats, language=language, voice=voice, provider=provider)
-
-    return vocab_audio_path, passage_audio_path
+# Wrap extract_text_from_image with cache for Streamlit
+@st.cache_data(show_spinner=False)
+def cached_extract_text_from_image(image_bytes):
+    return extract_text_from_image(image_bytes)
 
 async def generate_preview_audio(text, rate, voice, provider):
     """Generates a single preview audio file for a word or sentence."""
@@ -119,273 +62,419 @@ async def generate_preview_audio(text, rate, voice, provider):
 
 st.title("Dictation Buddy 🎧")
 
-tab1, tab2 = st.tabs(["Create Practice", "Recordings Library"])
+tab1, tab2 = st.tabs(["Create Practice", "Saved Sessions"])
 
 with tab1:
-    st.markdown("Upload a photo of your dictation sheet to generate practice audio.")
+    # Check if a session is currently loaded
+    loaded_session_id = st.session_state.get("loaded_session_id")
+    
+    if loaded_session_id:
+        st.info(f"Editing Loaded Session: **{st.session_state.get('loaded_session_name', 'Unknown')}**")
+        if st.button("Start New Session (Clear Logic)", type="secondary"):
+            # Clear all session state related to current session
+            keys_to_clear = ["extracted_data", "vocab_list", "loaded_session_id", "loaded_session_name", "last_uploaded_files", "preview_cache"]
+            for k in keys_to_clear:
+                if k in st.session_state:
+                    del st.session_state[k]
+            st.rerun()
+    else:
+        st.markdown("Upload photos of your dictation sheet (max 5) to generate practice audio.")
 
-    uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "png", "jpeg"])
+        uploaded_files = st.file_uploader("Choose images...", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
 
-    if uploaded_file is not None:
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] Image received: {uploaded_file.name}")
-        # Display image
-        st.image(uploaded_file, caption='Uploaded Image')
-        
-        # Extract Text
-        if "extracted_data" not in st.session_state or st.session_state.get("last_uploaded_file") != uploaded_file.name:
-            with st.spinner("Analyzing image with Gemini..."):
-                # Read file buffer as bytes for caching key
-                image_bytes = uploaded_file.getvalue()
-                data = extract_text_from_image(image_bytes)
+        if uploaded_files:
+            if len(uploaded_files) > 5:
+                st.warning(f"You uploaded {len(uploaded_files)} images. Only the first 5 will be processed.")
+                uploaded_files = uploaded_files[:5]
+            
+            # Create a unique key for the set of files to prevent re-processing on every rerun if unchanged
+            current_files_key = ",".join([f.name for f in uploaded_files])
+            
+            st.write(f"Processing {len(uploaded_files)} images...")
+            
+            # Extract Text
+            if "extracted_data" not in st.session_state or st.session_state.get("last_uploaded_files") != current_files_key:
                 
-                if data:
-                    print(f"[{datetime.now().strftime('%H:%M:%S')}] Dictation content detected.")
-                    print(f"[{datetime.now().strftime('%H:%M:%S')}] Language detected: {data.get('language', 'en')}")
-                    print(f"[{datetime.now().strftime('%H:%M:%S')}] Vocabulary identified: {len(data.get('vocabulary', []))} words.")
-                    print(f"[{datetime.now().strftime('%H:%M:%S')}] Passage identified: {len(data.get('passage', ''))} chars.")
-                else:
-                    print(f"[{datetime.now().strftime('%H:%M:%S')}] Failed to detect dictation content.")
-
-                st.session_state["extracted_data"] = data
-                st.session_state["last_uploaded_file"] = uploaded_file.name
-                # Clear preview cache on new file
-                st.session_state["preview_cache"] = {}
-        
-        data = st.session_state.get("extracted_data")
-
-        if data:
-            # Determine Language and Voice Options
-            detected_lang = data.get("language", "en")
-            
-            st.divider()
-            st.subheader("Review & Edit Content")
-            
-            # --- TTS Settings ---
-            c_lang, c_provider, c_voice = st.columns([1, 2, 3])
-            
-            with c_lang:
-                st.info(f"Detected: {detected_lang}")
+                # Aggregation containers
+                all_vocab = []
+                all_passage_parts = []
+                detected_language = "en" # Default to en, update with first detection
                 
-            with c_provider:
-                tts_provider = st.radio("TTS Provider", ["Edge TTS (Free)", "Google Cloud TTS"], horizontal=True)
-                provider_code = "google" if tts_provider == "Google Cloud TTS" else "edge"
-
-            with c_voice:
-                voice_options = {}
-                if provider_code == "edge":
-                    if detected_lang == "zh-tw":
-                        voice_options = {
-                            "HsiaoChen (Taiwan, Female, Soft)": "zh-TW-HsiaoChenNeural",
-                            "HsiaoYu (Taiwan, Female, Crisp)": "zh-TW-HsiaoYuNeural",
-                            "YunJhe (Taiwan, Male, Gentle)": "zh-TW-YunJheNeural",
-                            "Xiaoxiao (Mainland, Female, Warm)": "zh-CN-XiaoxiaoNeural",
-                            "Yunxi (Mainland, Male, Calm)": "zh-CN-YunxiNeural",
-                            "Xiaoyi (Mainland, Female, Gentle)": "zh-CN-XiaoyiNeural",
-                            "Yunjian (Mainland, Male, Sports)": "zh-CN-YunjianNeural"
-                        }
-                    else:
-                        voice_options = {
-                            "Aria (US, Female)": "en-US-AriaNeural",
-                            "Guy (US, Male)": "en-US-GuyNeural",
-                            "Sonia (UK, Female)": "en-GB-SoniaNeural"
-                        }
-                else: # Google
-                    if detected_lang == "zh-tw":
-                        voice_options = {
-                            "Standard A (Mainland, Female)": "cmn-CN-Standard-A",
-                            "Standard B (Mainland, Male)": "cmn-CN-Standard-B",
-                            "Standard C (Mainland, Male)": "cmn-CN-Standard-C",
-                            "Standard D (Mainland, Female)": "cmn-CN-Standard-D",
-                            "TW Standard A (Taiwan, Female)": "cmn-TW-Standard-A",
-                            "TW Standard B (Taiwan, Male)": "cmn-TW-Standard-B",
-                            "TW Standard C (Taiwan, Male)": "cmn-TW-Standard-C"
-                        }
-                    else:
-                        voice_options = {
-                            "Standard A (US, Male)": "en-US-Standard-A",
-                            "Standard B (US, Male)": "en-US-Standard-B",
-                            "Standard C (US, Female)": "en-US-Standard-C",
-                            "Standard D (US, Male)": "en-US-Standard-D"
-                        }
-
-                selected_voice_label = st.selectbox("Select Voice", list(voice_options.keys()))
-                selected_voice = voice_options[selected_voice_label]
-
-            col1, col2 = st.columns(2)
-            
-            # --- Vocabulary Section ---
-            with col1:
-                st.markdown("**Vocabulary List**")
-                
-                # Initialize vocab list in session state if not present
-                if "vocab_list" not in st.session_state:
-                    st.session_state["vocab_list"] = data.get("vocabulary", [])
-
-                # Display list with previews
-                updated_vocab_list = []
-                for i, word in enumerate(st.session_state["vocab_list"]):
-                    c1, c2 = st.columns([3, 1])
-                    with c1:
-                        new_word = st.text_input(f"Word {i+1}", value=word, key=f"vocab_{i}")
-                        updated_vocab_list.append(new_word)
-                    with c2:
-                        # Preview Button
-                        preview_key = f"vocab_preview_{i}_{new_word}_{speed_str}_{selected_voice}_{provider_code}"
-                        if preview_key not in st.session_state.get("preview_cache", {}):
-                             # Generate preview on the fly (async in sync context workaround)
-                             try:
-                                loop = asyncio.new_event_loop()
-                                asyncio.set_event_loop(loop)
-                                path = loop.run_until_complete(generate_preview_audio(new_word, speed_str, selected_voice, provider_code))
-                                loop.close()
+                with st.spinner("Analyzing images with Gemini..."):
+                    progress_bar = st.progress(0)
+                    
+                    for idx, uploaded_file in enumerate(uploaded_files):
+                        # Read file buffer as bytes for caching key
+                        image_bytes = uploaded_file.getvalue()
+                        data = cached_extract_text_from_image(image_bytes)
+                        
+                        if data:
+                            print(f"[{datetime.now().strftime('%H:%M:%S')}] Image {idx+1} processed.")
+                            
+                            # Aggregate Vocabulary
+                            new_vocab = data.get("vocabulary", [])
+                            if new_vocab:
+                                all_vocab.extend(new_vocab)
                                 
+                            # Aggregate Passage
+                            new_passage = data.get("passage", "")
+                            if new_passage:
+                                all_passage_parts.append(new_passage)
+                                
+                            # Capture language from the first file that has it
+                            if idx == 0:
+                                detected_language = data.get("language", "en")
+                        else:
+                            print(f"[{datetime.now().strftime('%H:%M:%S')}] Failed to detect dictation content in image {idx+1}.")
+                        
+                        progress_bar.progress((idx + 1) / len(uploaded_files))
+
+                # Combine results
+                final_data = {
+                    "vocabulary": list(dict.fromkeys(all_vocab)), # Remove duplicates
+                    "passage": "\n\n".join(all_passage_parts),
+                    "language": detected_language
+                }
+
+                st.session_state["extracted_data"] = final_data
+                st.session_state["last_uploaded_files"] = current_files_key
+                # Clear preview cache on new file set
+                st.session_state["preview_cache"] = {}
+                
+                st.success("Analysis Complete!")
+        
+    data = st.session_state.get("extracted_data")
+
+    if data:
+        # Determine Language and Voice Options
+        detected_lang = data.get("language", "en")
+        
+        st.divider()
+        st.subheader("Review & Edit Content")
+        
+        # --- TTS Settings ---
+        c_lang, c_provider, c_voice = st.columns([1, 2, 3])
+        
+        with c_lang:
+            st.info(f"Detected: {detected_lang}")
+            
+        with c_provider:
+            tts_provider = st.radio("TTS Provider", ["Edge TTS (Free)", "Google Cloud TTS"], horizontal=True)
+            provider_code = "google" if tts_provider == "Google Cloud TTS" else "edge"
+
+        with c_voice:
+            voice_options = {}
+            if provider_code == "edge":
+                if detected_lang == "zh-tw":
+                    voice_options = {
+                        "HsiaoChen (Taiwan, Female, Soft)": "zh-TW-HsiaoChenNeural",
+                        "HsiaoYu (Taiwan, Female, Crisp)": "zh-TW-HsiaoYuNeural",
+                        "YunJhe (Taiwan, Male, Gentle)": "zh-TW-YunJheNeural",
+                        "Xiaoxiao (Mainland, Female, Warm)": "zh-CN-XiaoxiaoNeural",
+                        "Yunxi (Mainland, Male, Calm)": "zh-CN-YunxiNeural",
+                        "Xiaoyi (Mainland, Female, Gentle)": "zh-CN-XiaoyiNeural",
+                        "Yunjian (Mainland, Male, Sports)": "zh-CN-YunjianNeural"
+                    }
+                else:
+                    voice_options = {
+                        "Aria (US, Female)": "en-US-AriaNeural",
+                        "Guy (US, Male)": "en-US-GuyNeural",
+                        "Sonia (UK, Female)": "en-GB-SoniaNeural"
+                    }
+            else: # Google
+                if detected_lang == "zh-tw":
+                    voice_options = {
+                        "Standard A (Mainland, Female)": "cmn-CN-Standard-A",
+                        "Standard B (Mainland, Male)": "cmn-CN-Standard-B",
+                        "Standard C (Mainland, Male)": "cmn-CN-Standard-C",
+                        "Standard D (Mainland, Female)": "cmn-CN-Standard-D",
+                        "TW Standard A (Taiwan, Female)": "cmn-TW-Standard-A",
+                        "TW Standard B (Taiwan, Male)": "cmn-TW-Standard-B",
+                        "TW Standard C (Taiwan, Male)": "cmn-TW-Standard-C"
+                    }
+                else:
+                    voice_options = {
+                        "Standard A (US, Male)": "en-US-Standard-A",
+                        "Standard B (US, Male)": "en-US-Standard-B",
+                        "Standard C (US, Female)": "en-US-Standard-C",
+                        "Standard D (US, Male)": "en-US-Standard-D"
+                    }
+
+            selected_voice_label = st.selectbox("Select Voice", list(voice_options.keys()))
+            selected_voice = voice_options[selected_voice_label]
+
+        col1, col2 = st.columns(2)
+        
+        # --- Vocabulary Section ---
+        with col1:
+            st.markdown("**Vocabulary List**")
+            
+            # Initialize vocab list in session state if not present
+            if "vocab_list" not in st.session_state:
+                st.session_state["vocab_list"] = data.get("vocabulary", [])
+
+            # Display list with previews
+            updated_vocab_list = []
+            for i, word in enumerate(st.session_state["vocab_list"]):
+                c1, c2 = st.columns([3, 1])
+                with c1:
+                    new_word = st.text_input(f"Word {i+1}", value=word, key=f"vocab_{i}")
+                    updated_vocab_list.append(new_word)
+                with c2:
+                    # Preview Button
+                    preview_key = f"vocab_preview_{i}_{new_word}_{speed_str}_{selected_voice}_{provider_code}"
+                    cached_path = st.session_state.get("preview_cache", {}).get(preview_key)
+                    
+                    if not cached_path or not os.path.exists(cached_path):
+                         # Generate preview on the fly
+                         try:
+                            # Use asyncio.run for safer loop management
+                            path = asyncio.run(generate_preview_audio(new_word, speed_str, selected_voice, provider_code))
+                            
+                            if path:
                                 if "preview_cache" not in st.session_state:
                                     st.session_state["preview_cache"] = {}
                                 st.session_state["preview_cache"][preview_key] = path
                                 print(f"[{datetime.now().strftime('%H:%M:%S')}] Preview generated for word: {new_word}")
-                             except Exception as e:
-                                 print(f"[{datetime.now().strftime('%H:%M:%S')}] Failed to generate preview for word {new_word}: {e}")
-                                 st.caption("⚠️ Preview unavailable")
-                        
-                        audio_path = st.session_state.get("preview_cache", {}).get(preview_key)
-                        if audio_path:
-                            st.audio(audio_path, format="audio/mp3")
+                                cached_path = path
+                            else:
+                                st.caption("No audio generated.")
+                         except Exception as e:
+                             print(f"[{datetime.now().strftime('%H:%M:%S')}] Failed to generate preview for word {new_word}: {e}")
+                             st.caption(f"⚠️ Preview error: {e}")
 
-                st.session_state["vocab_list"] = updated_vocab_list
-                vocab_list = [w for w in updated_vocab_list if w.strip()]
-                
-                st.markdown("---")
-                st.markdown("**Vocabulary Settings**")
-                vocab_repeats = st.number_input("Repeats per word", min_value=1, max_value=5, value=2)
-                vocab_silence = st.number_input("Silence duration (seconds)", min_value=1, max_value=10, value=3)
-                shuffle_vocab = st.checkbox("Shuffle Vocabulary Order")
+                    if cached_path:
+                        st.audio(cached_path, format="audio/mp3")
 
-            # --- Passage Section ---
-            with col2:
-                st.markdown("**Passage Text**")
-                passage_text = st.text_area(
-                    "Edit the passage if needed:",
-                    value=data.get("passage", ""),
-                    height=300,
-                    key="passage_text_area"
-                )
-                
-                st.markdown("**Passage Settings**")
-                passage_repeats = st.number_input("Repeats per sentence", min_value=1, max_value=5, value=3)
-                
-                # Passage Speed Control
-                passage_speed_adj = st.slider("Passage Speed Adjustment (%)", min_value=-50, max_value=50, value=-20, step=10, key="passage_speed")
-                passage_speed_str = f"{passage_speed_adj:+d}%"
+            st.session_state["vocab_list"] = updated_vocab_list
+            vocab_list = [w for w in updated_vocab_list if w.strip()]
+            
+            st.markdown("---")
+            st.markdown("**Vocabulary Settings**")
+            vocab_repeats = st.number_input("Repeats per word", min_value=1, max_value=5, value=2)
+            vocab_silence = st.number_input("Silence duration (seconds)", min_value=1, max_value=10, value=3)
+            shuffle_vocab = st.checkbox("Shuffle Vocabulary Order")
 
-                # Passage Previews
-                if passage_text:
-                    st.markdown("**Sentence Previews**")
-                    sentences = split_into_sentences(passage_text)
-                    print(f"[{datetime.now().strftime('%H:%M:%S')}] Passage split into {len(sentences)} sentences.")
+        # --- Passage Section ---
+        with col2:
+            st.markdown("**Passage Text**")
+            passage_text = st.text_area(
+                "Edit the passage if needed:",
+                value=data.get("passage", ""),
+                height=300,
+                key="passage_text_area"
+            )
+            
+            st.markdown("**Passage Settings**")
+            passage_repeats = st.number_input("Repeats per sentence", min_value=1, max_value=5, value=3)
+            
+            # Passage Speed Control
+            passage_speed_adj = st.slider("Passage Speed Adjustment (%)", min_value=-50, max_value=50, value=-20, step=10, key="passage_speed")
+            passage_speed_str = f"{passage_speed_adj:+d}%"
 
-                    for i, sentence in enumerate(sentences):
-                        c1, c2 = st.columns([3, 1])
-                        with c1:
-                            st.caption(f"{i+1}. {sentence}")
-                        with c2:
-                             preview_key = f"passage_preview_{i}_{sentence[:20]}_{passage_speed_str}_{selected_voice}_{provider_code}"
-                             if preview_key not in st.session_state.get("preview_cache", {}):
-                                 try:
-                                    loop = asyncio.new_event_loop()
-                                    asyncio.set_event_loop(loop)
-                                    # Clean text for reading (punctuation to words)
-                                    spoken_sentence = clean_text_for_reading(sentence, language=detected_lang)
-                                    path = loop.run_until_complete(generate_preview_audio(spoken_sentence, passage_speed_str, selected_voice, provider_code))
-                                    loop.close()
+            # Passage Previews
+            if passage_text:
+                st.markdown("**Sentence Previews**")
+                sentences = split_into_sentences(passage_text)
+
+                for i, sentence in enumerate(sentences):
+                    c1, c2 = st.columns([3, 1])
+                    with c1:
+                        st.caption(f"{i+1}. {sentence}")
+                    with c2:
+                         preview_key = f"passage_preview_{i}_{sentence[:20]}_{passage_speed_str}_{selected_voice}_{provider_code}"
+                         cached_path = st.session_state.get("preview_cache", {}).get(preview_key)
+                         
+                         if not cached_path or not os.path.exists(cached_path):
+                             try:
+                                spoken_sentence = clean_text_for_reading(sentence, language=detected_lang)
+                                path = asyncio.run(generate_preview_audio(spoken_sentence, passage_speed_str, selected_voice, provider_code))
+                                
+                                if path:
                                     if "preview_cache" not in st.session_state:
                                         st.session_state["preview_cache"] = {}
                                     st.session_state["preview_cache"][preview_key] = path
                                     print(f"[{datetime.now().strftime('%H:%M:%S')}] Sentence preview generated: {sentence[:20]}...")
-                                 except Exception as e:
-                                     print(f"[{datetime.now().strftime('%H:%M:%S')}] Failed to generate preview for sentence {i}: {e}")
-                             
-                             audio_path = st.session_state.get("preview_cache", {}).get(preview_key)
-                             if audio_path:
-                                st.audio(audio_path, format="audio/mp3")
+                                    cached_path = path
+                                else:
+                                     st.caption("No audio.")
+                             except Exception as e:
+                                 print(f"[{datetime.now().strftime('%H:%M:%S')}] Failed to generate preview for sentence {i}: {e}")
+                                 st.caption(f"⚠️ Error: {e}")
+                         
+                         if cached_path:
+                            st.audio(cached_path, format="audio/mp3")
 
-            st.divider()
-            
-            if st.button("Generate Audio 🎵", type="primary"):
-                # Run async audio generation
+        st.divider()
+        
+        if st.button("Generate Audio 🎵", type="primary"):
+            # Run async audio generation
+            try:
+                # Handle async loop for Streamlit
                 try:
-                    # Handle async loop for Streamlit
-                    try:
-                        loop = asyncio.get_event_loop()
-                    except RuntimeError:
-                        loop = asyncio.new_event_loop()
-                        asyncio.set_event_loop(loop)
-                    
+                    loop = asyncio.get_event_loop()
+                except RuntimeError:
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                
+                with st.spinner("Generating Audio..."):
                     if loop.is_running():
                         vocab_path, passage_path = loop.run_until_complete(process_audio_generation(vocab_list, passage_text, speed_str, passage_speed_str, vocab_repeats, vocab_silence, passage_repeats, shuffle_vocab, detected_lang, selected_voice, provider_code))
                     else:
                          vocab_path, passage_path = loop.run_until_complete(process_audio_generation(vocab_list, passage_text, speed_str, passage_speed_str, vocab_repeats, vocab_silence, passage_repeats, shuffle_vocab, detected_lang, selected_voice, provider_code))
 
-                    st.session_state["generated_vocab_path"] = vocab_path
-                    st.session_state["generated_passage_path"] = passage_path
-                    st.success("Audio Generation Complete!")
+                st.session_state["generated_vocab_path"] = vocab_path
+                st.session_state["generated_passage_path"] = passage_path
+                st.success("Audio Generation Complete!")
+                
+            except Exception as e:
+                st.error(f"An error occurred during audio generation: {e}")
+
+        # Display Generated Audio & Save Options
+        if st.session_state.get("generated_vocab_path") or st.session_state.get("generated_passage_path"):
+            st.divider()
+            st.subheader("Final Audio")
+            
+            if st.session_state.get("generated_vocab_path"):
+                st.markdown("### Part A: Vocabulary Practice")
+                st.audio(st.session_state["generated_vocab_path"], format="audio/mp3")
+                with open(st.session_state["generated_vocab_path"], "rb") as f:
+                     st.download_button("Download Vocab Audio", f, file_name="vocab_practice.mp3")
+
+            if st.session_state.get("generated_passage_path"):
+                st.markdown("### Part B: Passage Reading")
+                st.audio(st.session_state["generated_passage_path"], format="audio/mp3")
+                with open(st.session_state["generated_passage_path"], "rb") as f:
+                    st.download_button("Download Passage Audio", f, file_name="passage_reading.mp3")
+            
+            st.divider()
+            st.subheader("Save to Library")
+            # Save/Update Logic
+            with st.form("save_form"):
+                # If we loaded a session, default to its name
+                default_name = "My_Dictation"
+                loaded_session_id = st.session_state.get("loaded_session_id")
+                
+                if loaded_session_id:
+                    # Fetch current name if possible, or just keep what's in input if user changed it
+                    # For simplicity, we might just show the input. 
+                    # If we want to show the loaded name, we should have set it in session_state when loading.
+                    pass
+
+                save_name = st.text_input("Enter a name for this recording session:", value=st.session_state.get("loaded_session_name", "My_Dictation"))
+                
+                # Dynamic button text
+                submit_label = "Update Session" if loaded_session_id else "Save Recordings"
+                submitted = st.form_submit_button(submit_label)
+                
+                if submitted:
+                    saved_files = []
+                    vocab_audio_path = None
+                    passage_audio_path = None
                     
-                except Exception as e:
-                    st.error(f"An error occurred during audio generation: {e}")
-
-            # Display Generated Audio & Save Options
-            if st.session_state.get("generated_vocab_path") or st.session_state.get("generated_passage_path"):
-                st.divider()
-                st.subheader("Final Audio")
-                
-                if st.session_state.get("generated_vocab_path"):
-                    st.markdown("### Part A: Vocabulary Practice")
-                    st.audio(st.session_state["generated_vocab_path"], format="audio/mp3")
-                    with open(st.session_state["generated_vocab_path"], "rb") as f:
-                         st.download_button("Download Vocab Audio", f, file_name="vocab_practice.mp3")
-
-                if st.session_state.get("generated_passage_path"):
-                    st.markdown("### Part B: Passage Reading")
-                    st.audio(st.session_state["generated_passage_path"], format="audio/mp3")
-                    with open(st.session_state["generated_passage_path"], "rb") as f:
-                        st.download_button("Download Passage Audio", f, file_name="passage_reading.mp3")
-                
-                st.divider()
-                st.subheader("Save to Library")
-                with st.form("save_form"):
-                    save_name = st.text_input("Enter a name for this recording session:", value="My_Dictation")
-                    submitted = st.form_submit_button("Save Recordings")
-                    if submitted:
-                        saved_files = []
-                        if st.session_state.get("generated_vocab_path"):
-                            path = save_audio_file(st.session_state["generated_vocab_path"], save_name, "vocab")
-                            if path: saved_files.append(os.path.basename(path))
-                        
-                        if st.session_state.get("generated_passage_path"):
-                            path = save_audio_file(st.session_state["generated_passage_path"], save_name, "passage")
-                            if path: saved_files.append(os.path.basename(path))
-                        
-                        if saved_files:
-                            st.success(f"Saved: {', '.join(saved_files)}")
-                        else:
-                            st.warning("No files to save.")
+                    if st.session_state.get("generated_vocab_path"):
+                        path = save_audio_file(st.session_state["generated_vocab_path"], save_name, "vocab")
+                        if path: 
+                            saved_files.append(os.path.basename(path))
+                            vocab_audio_path = path
+                    
+                    if st.session_state.get("generated_passage_path"):
+                        path = save_audio_file(st.session_state["generated_passage_path"], save_name, "passage")
+                        if path: 
+                            saved_files.append(os.path.basename(path))
+                            passage_audio_path = path
+                    
+                    if saved_files:
+                        # Save to Database
+                        try:
+                            if loaded_session_id:
+                                # Update existing session
+                                # First, optionally delete old files if we want to clean up.
+                                # For now, we just update the DB record to point to new files.
+                                database.update_session(
+                                    session_id=loaded_session_id,
+                                    vocab_list=vocab_list,
+                                    vocab_audio_path=vocab_audio_path,
+                                    sentences=sentences if 'sentences' in locals() else [],
+                                    passage_audio_path=passage_audio_path,
+                                    language=detected_lang
+                                )
+                                st.success(f"Session '{save_name}' updated successfully!")
+                            else:
+                                # Create new session
+                                database.save_session(
+                                    name=save_name,
+                                    vocab_list=vocab_list,
+                                    vocab_audio_path=vocab_audio_path,
+                                    sentences=sentences if 'sentences' in locals() else [],
+                                    passage_audio_path=passage_audio_path,
+                                    language=detected_lang
+                                )
+                                st.success(f"Saved to Library & Database: {', '.join(saved_files)}")
+                        except Exception as e:
+                            st.error(f"Saved files but failed to save/update database: {e}")
+                    else:
+                        st.warning("No files to save.")
 
 with tab2:
-    st.header("Recordings Library")
-    recordings_dir = os.path.join(os.getcwd(), "recordings")
+    st.header("Saved Sessions")
     
-    if not os.path.exists(recordings_dir):
-        st.info("No recordings found yet.")
+    sessions = database.get_all_sessions()
+    
+    if not sessions:
+        st.info("No saved sessions found.")
     else:
-        files = [f for f in os.listdir(recordings_dir) if f.endswith(".mp3")]
-        if not files:
-            st.info("No recordings found yet.")
-        else:
-            # Sort by modification time (newest first)
-            files.sort(key=lambda x: os.path.getmtime(os.path.join(recordings_dir, x)), reverse=True)
+        for session in sessions:
+            session_id = session["id"]
+            session_name = session["name"]
+            created_at = session["created_at"]
             
-            for filename in files:
-                filepath = os.path.join(recordings_dir, filename)
-                with st.expander(filename):
-                    st.audio(filepath, format="audio/mp3")
-                    with open(filepath, "rb") as f:
-                        st.download_button(f"Download {filename}", f, file_name=filename)
+            with st.expander(f"{session_name} ({created_at})"):
+                # Fetch details
+                vocab_list, sentences = database.get_session_details(session_id)
+                
+                # Load Session Button
+                if st.button("Load Session", key=f"load_{session_id}"):
+                    # Set session state variables
+                    st.session_state["vocab_list"] = vocab_list
+                    # Reconstruct extracted_data structure for consistency
+                    st.session_state["extracted_data"] = {
+                        "vocabulary": vocab_list,
+                        "passage": " ".join(sentences), # Reconstruct passage from sentences
+                        "language": session.get("language", "en")
+                    }
+                    st.session_state["loaded_session_id"] = session_id
+                    st.session_state["loaded_session_name"] = session_name
+                    
+                    # Clear generated paths to force regeneration or at least show they aren't fresh yet
+                    if "generated_vocab_path" in st.session_state: del st.session_state["generated_vocab_path"]
+                    if "generated_passage_path" in st.session_state: del st.session_state["generated_passage_path"]
+                    
+                    st.success(f"Loaded session '{session_name}'. Switch to 'Create Practice' tab to edit.")
+                    st.rerun()
+                    # Optional: Force switch to tab 1 (not easily done in Streamlit without extra hacks, so just message)
+                
+                # Vocabulary Section
+                if vocab_list:
+                    st.subheader("Vocabulary")
+                    st.write(", ".join(vocab_list))
+                    if session["vocab_audio_path"] and os.path.exists(session["vocab_audio_path"]):
+                        st.audio(session["vocab_audio_path"], format="audio/mp3")
+                        with open(session["vocab_audio_path"], "rb") as f:
+                            st.download_button(f"Download Vocab Audio", f, file_name=f"{session_name}_vocab.mp3", key=f"dl_vocab_{session_id}")
+                
+                # Passage Section
+                if sentences:
+                    st.subheader("Passage")
+                    for i, sentence in enumerate(sentences):
+                        st.write(f"{i+1}. {sentence}")
+                    
+                    if session["passage_audio_path"] and os.path.exists(session["passage_audio_path"]):
+                        st.audio(session["passage_audio_path"], format="audio/mp3")
+                        with open(session["passage_audio_path"], "rb") as f:
+                            st.download_button(f"Download Passage Audio", f, file_name=f"{session_name}_passage.mp3", key=f"dl_passage_{session_id}")
+                
+                st.divider()
+                if st.button("Delete Session", key=f"del_{session_id}", type="secondary"):
+                    database.delete_session(session_id)
+                    st.rerun()

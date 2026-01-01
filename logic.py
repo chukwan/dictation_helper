@@ -56,14 +56,37 @@ async def generate_speech_bytes(text, rate, voice="en-US-AriaNeural", provider="
         else:
             raise Exception(f"Google TTS API failed: {response.text}")
 
+
     else:
         # Edge TTS
-        communicate = edge_tts.Communicate(text, voice, rate=rate)
-        mp3_data = b""
-        async for chunk in communicate.stream():
-            if chunk["type"] == "audio":
-                mp3_data += chunk["data"]
-        return mp3_data
+        try:
+            communicate = edge_tts.Communicate(text, voice, rate=rate)
+            mp3_data = b""
+            async for chunk in communicate.stream():
+                if chunk["type"] == "audio":
+                    mp3_data += chunk["data"]
+            if not mp3_data:
+                raise Exception("No audio received from Edge TTS")
+            return mp3_data
+        except Exception as e:
+            print(f"Edge TTS failed: {e}. Falling back to gTTS (Google Translate TTS)...")
+            # Fallback to gTTS
+            # Map voice/lang roughly
+            lang = "en"
+            if "zh-" in voice.lower() or "cmn-" in voice.lower():
+                lang = "zh-tw" if "tw" in voice.lower() else "zh-cn"
+            
+            from gtts import gTTS
+            
+            def run_gtts():
+                fp = io.BytesIO()
+                tts = gTTS(text=text, lang=lang)
+                tts.write_to_fp(fp)
+                fp.seek(0)
+                return fp.read()
+
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(None, run_gtts)
 
 def create_silence(duration_ms):
     return AudioSegment.silent(duration=duration_ms)
@@ -122,8 +145,8 @@ def split_into_sentences(text):
     Splits text into sentences.
     Simple split by period, question mark, exclamation mark (English and Chinese).
     """
-    # Split by [.?!] or [。？！]
-    sentences = re.split(r'(?<=[.?!。？！])\s*', text)
+    # Split by [.?!] or [。？！] and now commas [,] or [，]
+    sentences = re.split(r'(?<=[.?!,。？！，])\s*', text)
     return [s.strip() for s in sentences if s.strip()]
 
 async def process_vocabulary(vocab_list, rate, repeats=1, silence_duration_sec=3, shuffle=False, voice="en-US-AriaNeural", provider="edge"):
@@ -215,3 +238,71 @@ async def process_passage(passage_text, rate, sentence_repeats=3, language="en",
     passage_audio_path = os.path.join(temp_dir, "passage_reading.mp3")
     combined_passage_audio.export(passage_audio_path, format="mp3")
     return passage_audio_path
+
+def extract_text_from_image(image_bytes):
+    """
+    Sends image to Gemini Flash to extract vocabulary, passage, and language.
+    """
+    import google.generativeai as genai
+    from PIL import Image
+    
+    try:
+        model = genai.GenerativeModel('gemini-2.0-flash')
+        
+        prompt = """
+        Analyze this image and extract the text for a dictation practice session.
+        Return ONLY a raw JSON object (no markdown formatting) with the following structure:
+        {
+            "vocabulary": ["word1", "word2", ...],
+            "passage": "The full passage text...",
+            "language": "en" 
+        }
+        "language" should be "en" for English or "zh-tw" for Traditional Chinese. Default to "en" if unsure.
+        
+        IMPORTANT FOR CHINESE TEXT:
+        - Extract the Chinese characters (Hanzi) AND all punctuation marks (，。？！、"").
+        - The passage MUST include the original punctuation. Do not strip it.
+        - Do NOT extract Pinyin or phonetic guides. 
+        - If the image shows both Hanzi and Pinyin, extract ONLY the Hanzi and punctuation.
+        
+        If there is only vocabulary, leave "passage" as an empty string.
+        If there is only a passage, leave "vocabulary" as an empty list.
+        Ensure the JSON is valid.
+        """
+        
+        # Convert bytes back to image for Gemini if needed, or pass bytes directly if supported.
+        # Gemini Python SDK supports PIL Image.
+        image = Image.open(io.BytesIO(image_bytes))
+        
+        response = model.generate_content([prompt, image])
+        text = response.text
+        print(f"Extracted text from Gemini: {text}")
+        
+        # Clean up potential markdown code blocks
+        if text.startswith("```json"):
+            text = text[7:]
+        if text.endswith("```"):
+            text = text[:-3]
+            
+        return json.loads(text)
+    except Exception as e:
+        print(f"Error extracting text: {e}")
+        return None
+
+async def process_audio_generation(vocab_list, passage_text, vocab_rate, passage_rate, vocab_repeats, vocab_silence, passage_repeats, shuffle_vocab, language, voice, provider):
+    """
+    Orchestrates the audio generation process.
+    Returns paths to the generated temporary files.
+    """
+    vocab_audio_path = None
+    passage_audio_path = None
+
+    # --- Process Vocabulary ---
+    if vocab_list:
+        vocab_audio_path = await process_vocabulary(vocab_list, vocab_rate, repeats=vocab_repeats, silence_duration_sec=vocab_silence, shuffle=shuffle_vocab, voice=voice, provider=provider)
+
+    # --- Process Passage ---
+    if passage_text:
+        passage_audio_path = await process_passage(passage_text, passage_rate, sentence_repeats=passage_repeats, language=language, voice=voice, provider=provider)
+
+    return vocab_audio_path, passage_audio_path
