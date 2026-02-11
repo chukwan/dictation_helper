@@ -43,6 +43,13 @@ from logic import (
     process_audio_generation, analyze_transcript, generate_conversation_audio
 )
 
+# Import Qwen Logic (Lazy load or try/except to avoid crash if not installed)
+try:
+    import qwen_logic
+except ImportError:
+    qwen_logic = None
+
+
 
 # Wrap extract_text_from_image with cache for Streamlit
 @st.cache_data(show_spinner=False)
@@ -60,14 +67,14 @@ async def generate_preview_audio(text, rate, voice, provider):
             f.write(mp3_bytes)
             return f.name
     except Exception as e:
-        print(f"Preview generation failed: {e}")
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Preview generation failed: {e}")
         return None
 
 # --- Main UI ---
 
 st.title("Dictation Buddy 🎧")
 
-tab1, tab2, tab3 = st.tabs(["Create Practice", "Recordings Library", "Conversation Generator"])
+tab1, tab2, tab3, tab4 = st.tabs(["Create Practice", "Recordings Library", "Conversation Generator", "Qwen Script Builder"])
 
 with tab3:
     st.header("Conversation Generator")
@@ -265,13 +272,16 @@ with tab1:
             else: # Google
                 if detected_lang == "zh-tw":
                     voice_options = {
-                        "Standard A (Mainland, Female)": "cmn-CN-Standard-A",
-                        "Standard B (Mainland, Male)": "cmn-CN-Standard-B",
-                        "Standard C (Mainland, Male)": "cmn-CN-Standard-C",
-                        "Standard D (Mainland, Female)": "cmn-CN-Standard-D",
-                        "TW Standard A (Taiwan, Female)": "cmn-TW-Standard-A",
-                        "TW Standard B (Taiwan, Male)": "cmn-TW-Standard-B",
-                        "TW Standard C (Taiwan, Male)": "cmn-TW-Standard-C"
+                        "Cantonese Standard A (HK, Female)": "yue-HK-Standard-A",
+                        "Cantonese Standard B (HK, Male)": "yue-HK-Standard-B",
+                        "Cantonese Standard C (HK, Female)": "yue-HK-Standard-C",
+                        "Cantonese Standard D (HK, Male)": "yue-HK-Standard-D",
+                        "Mandarin Standard A (Mainland, Female)": "cmn-CN-Standard-A",
+                        "Mandarin Standard B (Mainland, Male)": "cmn-CN-Standard-B",
+                        "Mandarin Standard C (Mainland, Male)": "cmn-CN-Standard-C",
+                        "Mandarin TW Standard A (Taiwan, Female)": "cmn-TW-Standard-A",
+                        "Mandarin TW Standard B (Taiwan, Male)": "cmn-TW-Standard-B",
+                        "Mandarin TW Standard C (Taiwan, Male)": "cmn-TW-Standard-C"
                     }
                 else:
                     voice_options = {
@@ -559,3 +569,144 @@ with tab2:
                 if st.button("Delete Session", key=f"del_{session_id}", type="secondary"):
                     database.delete_session(session_id)
                     st.rerun()
+
+with tab4:
+    st.header("Qwen3-TTS Script Builder 🎙️")
+    
+    if qwen_logic is None:
+        st.error("Qwen module not found. Please install dependencies.")
+    else:
+        # Sidebar-like column for settings
+        c_main, c_config = st.columns([3, 1])
+        
+        with c_config:
+            st.markdown("### Settings")
+            st.info(f"Device: {qwen_logic.get_device()}")
+            
+            if st.button("Load Qwen Model", type="primary"):
+                with st.spinner("Loading Model (1.7B)... this may take a moment"):
+                    model = qwen_logic.load_model()
+                    if model:
+                        st.success("Model Loaded!")
+                    else:
+                        st.error("Failed to load model.")
+            
+            if st.button("Unload Model"):
+                qwen_logic.unload_model()
+                st.info("Model Unloaded.")
+
+        with c_main:
+            # Session State for Script
+            if "qwen_script" not in st.session_state:
+                st.session_state["qwen_script"] = [{"speaker": "Speaker 1", "text": ""}]
+            
+            # Speaker Config
+            st.subheader("Speaker Settings")
+            speakers_available = qwen_logic.get_speakers()
+            # Default fallback if checking before model load
+            if not speakers_available: 
+                speakers_available = ["Vivian", "Ryan", "Classic Male", "Classic Female"] 
+
+            col_s1, col_s2 = st.columns(2)
+            with col_s1:
+                st.markdown("🟡 **Speaker 1**")
+                s1_name = st.text_input("Name", "Speaker 1", key="s1_name")
+                s1_voice = st.selectbox("Voice", speakers_available, index=0, key="s1_voice")
+            
+            with col_s2:
+                st.markdown("🟣 **Speaker 2**")
+                s2_name = st.text_input("Name", "Speaker 2", key="s2_name")
+                s2_voice = st.selectbox("Voice", speakers_available, index=1 if len(speakers_available)>1 else 0, key="s2_voice")
+            
+            st.divider()
+            
+            # Script Builder UI
+            st.subheader("Script Builder")
+            
+            script_items = st.session_state["qwen_script"]
+            new_script_items = []
+            
+            for idx, item in enumerate(script_items):
+                c_spk, c_txt, c_act = st.columns([1, 4, 0.5])
+                
+                with c_spk:
+                    # Select Speaker 1 or 2
+                    current_spk = item.get("speaker", "Speaker 1")
+                    options = ["Speaker 1", "Speaker 2"]
+                    sel_idx = 0 if current_spk == "Speaker 1" else 1
+                    
+                    spk_sel = st.selectbox(
+                        "Speaker", 
+                        options, 
+                        index=sel_idx, 
+                        key=f"q_spk_{idx}", 
+                        label_visibility="collapsed"
+                    )
+                    
+                    # Visual indicator
+                    if spk_sel == "Speaker 1":
+                        st.caption(f"🟡 {s1_name}")
+                    else:
+                        st.caption(f"🟣 {s2_name}")
+                
+                with c_txt:
+                    text_val = st.text_area(
+                        "Text", 
+                        value=item.get("text", ""), 
+                        key=f"q_txt_{idx}", 
+                        height=70, 
+                        label_visibility="collapsed",
+                        placeholder="Enter dialogue..."
+                    )
+                
+                with c_act:
+                    if st.button("❌", key=f"q_del_{idx}"):
+                        continue # Skip appending to delete
+                
+                new_script_items.append({"speaker": spk_sel, "text": text_val})
+            
+            st.session_state["qwen_script"] = new_script_items
+            
+            if st.button("⊕ Add Dialog"):
+                # Determine next speaker (toggle)
+                last_spk = new_script_items[-1]["speaker"] if new_script_items else "Speaker 2"
+                next_spk = "Speaker 2" if last_spk == "Speaker 1" else "Speaker 1"
+                st.session_state["qwen_script"].append({"speaker": next_spk, "text": ""})
+                st.rerun()
+
+            st.divider()
+            
+            if st.button("Run (Ctrl + Enter)", type="primary"):
+                # Generation Logic
+                with st.spinner("Generating Speech..."):
+                    combined_audio = AudioSegment.empty()
+                    
+                    for idx, item in enumerate(st.session_state["qwen_script"]):
+                        text = item["text"]
+                        if not text.strip(): continue
+                        
+                        spk_role = item["speaker"]
+                        # Map role to selected voice
+                        target_voice = s1_voice if spk_role == "Speaker 1" else s2_voice
+                        
+                        audio_result = qwen_logic.generate_voice(text, target_voice)
+                        
+                        if audio_result:
+                            # Convert bytes -> AudioSegment
+                            seg = AudioSegment.from_file(io.BytesIO(audio_result), format="mp3")
+                            combined_audio += seg
+                            # Add small pause
+                            combined_audio += AudioSegment.silent(duration=300)
+                        else:
+                            st.error(f"Failed to generate line {idx+1}")
+                    
+                    # Export final
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as f:
+                        combined_audio.export(f.name, format="mp3")
+                        st.session_state["qwen_final_audio"] = f.name
+                        st.success("Generation Complete!")
+            
+            if st.session_state.get("qwen_final_audio"):
+                st.audio(st.session_state["qwen_final_audio"], format="audio/mp3")
+                with open(st.session_state["qwen_final_audio"], "rb") as f:
+                     st.download_button("Download Script Audio", f, file_name="qwen_script_audio.mp3")

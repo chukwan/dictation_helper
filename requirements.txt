@@ -8,4 +8,12 @@ pytest
 pytest-asyncio
 gTTS
 requests
-audioop-lts
+# ML / Qwen Dependencies
+torch
+torchvision
+torchaudio
+transformers
+accelerate
+scipy
+librosa
+qwen-tts

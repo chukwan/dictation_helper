@@ -69,12 +69,25 @@ async def generate_speech_bytes(text, rate, voice="en-US-AriaNeural", provider="
                 raise Exception("No audio received from Edge TTS")
             return mp3_data
         except Exception as e:
-            print(f"Edge TTS failed: {e}. Falling back to gTTS (Google Translate TTS)...")
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] Edge TTS failed: {e}. Falling back to gTTS (Google Translate TTS)...")
             # Fallback to gTTS
             # Map voice/lang roughly
             lang = "en"
             if "zh-" in voice.lower() or "cmn-" in voice.lower():
-                lang = "zh-tw" if "tw" in voice.lower() else "zh-cn"
+                # Check for Cantonese (HK usually implies Cantonese in this context, TW might be Mandarin or Cantonese but often users expecting Cantonese might select HK voices)
+                # Google Translate TTS uses 'yue' for Cantonese.
+                if "hk" in voice.lower():
+                    lang = "yue"
+                elif "tw" in voice.lower():
+                     # Default TW to zh-tw (Mandarin) unless we want to support TW Cantonese? 
+                     # Usually standard TW voice is Mandarin. 
+                     # But let's check if the user selected a Cantonese specific voice. 
+                     # The user said "picked cantonese", which usually means the language selection.
+                     # In app.py: conv_lang == "Cantonese" -> lang_code = "zh-HK"
+                     # So checking "hk" in voice (which comes from lang_code mapping) is the safest bet for "Cantonese".
+                    lang = "zh-tw" 
+                else:
+                    lang = "zh-cn"
             
             from gtts import gTTS
             
@@ -247,7 +260,7 @@ def extract_text_from_image(image_bytes):
     from PIL import Image
     
     try:
-        model = genai.GenerativeModel('gemini-2.0-flash')
+        model = genai.GenerativeModel('gemini-2.5-flash')
         
         prompt = """
         Analyze this image and extract the text for a dictation practice session.
@@ -276,7 +289,7 @@ def extract_text_from_image(image_bytes):
         
         response = model.generate_content([prompt, image])
         text = response.text
-        print(f"Extracted text from Gemini: {text}")
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Extracted text from Gemini: {text}")
         
         # Clean up potential markdown code blocks
         if text.startswith("```json"):
@@ -286,7 +299,7 @@ def extract_text_from_image(image_bytes):
             
         return json.loads(text)
     except Exception as e:
-        print(f"Error extracting text: {e}")
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Error extracting text: {e}")
         return None
 
 async def process_audio_generation(vocab_list, passage_text, vocab_rate, passage_rate, vocab_repeats, vocab_silence, passage_repeats, shuffle_vocab, language, voice, provider):
@@ -349,7 +362,7 @@ def analyze_transcript(text, num_speakers, language_code="zh-HK"):
         return json.loads(content)
         
     except Exception as e:
-        print(f"Error in analyze_transcript: {e}")
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Error in analyze_transcript: {e}")
         return []
 
 async def generate_conversation_audio(segments, language_code="zh-HK", provider="edge"):
@@ -367,9 +380,18 @@ async def generate_conversation_audio(segments, language_code="zh-HK", provider=
         "en-US": ["en-US-AriaNeural", "en-US-GuyNeural", "en-US-JennyNeural", "en-US-EricNeural"],
         "zh-CN": ["zh-CN-XiaoxiaoNeural", "zh-CN-YunxiNeural", "zh-CN-XiaoyiNeural", "zh-CN-YunjianNeural"],
     }
+
+    # Google Cloud TTS voices
+    VOICE_MAP_GOOGLE = {
+        "zh-HK": ["yue-HK-Standard-A", "yue-HK-Standard-B", "yue-HK-Standard-C", "yue-HK-Standard-D"],
+        "en-US": ["en-US-Standard-A", "en-US-Standard-B", "en-US-Standard-C", "en-US-Standard-D"],
+        "zh-CN": ["cmn-CN-Standard-A", "cmn-CN-Standard-B", "cmn-CN-Standard-C", "cmn-CN-Standard-D"],
+    }
+    
+    voice_map = VOICE_MAP_GOOGLE if provider == "google" else VOICE_MAP_EDGE
     
     # Fallback to English if not found
-    available_voices = VOICE_MAP_EDGE.get(language_code, VOICE_MAP_EDGE["en-US"])
+    available_voices = voice_map.get(language_code, voice_map.get("en-US", []))
     
     temp_dir = tempfile.gettempdir()
     combined_audio = AudioSegment.empty()
@@ -396,7 +418,7 @@ async def generate_conversation_audio(segments, language_code="zh-HK", provider=
             combined_audio += segment_audio + pause
             
         except Exception as e:
-            print(f"Failed to generate segment for {speaker_id}: {e}")
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] Failed to generate segment for {speaker_id}: {e}")
             continue
 
     output_path = os.path.join(temp_dir, "conversation_output.mp3")

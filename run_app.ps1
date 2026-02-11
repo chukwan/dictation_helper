@@ -36,7 +36,8 @@ if (-not (Test-Path $VenvDir)) {
     
     Write-Host "Installing requirements..." -ForegroundColor Cyan
     & ".\$VenvDir\Scripts\pip.exe" install -r requirements.txt
-} else {
+}
+else {
     # If Rebuild was not requested but venv exists, we can optionally check for updates
     # But for now, we'll assume it's good unless Rebuild is passed.
     Write-Host "Virtual environment found." -ForegroundColor Green
@@ -47,8 +48,9 @@ $StreamlitPath = ".\$VenvDir\Scripts\streamlit.exe"
 
 if (Test-Path $StreamlitPath) {
     Write-Host "Starting Dictation Buddy..." -ForegroundColor Cyan
-    & $StreamlitPath run app.py
-} else {
+    & $StreamlitPath run app.py --server.port 8501 --server.address 127.0.0.1
+}
+else {
     Write-Error "Streamlit not found in virtual environment. Please run with -Rebuild to fix."
     exit 1
 }
