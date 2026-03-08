@@ -358,6 +358,8 @@ with tab1:
             
             st.markdown("**Passage Settings**")
             passage_repeats = st.number_input("Repeats per sentence", min_value=1, max_value=5, value=3)
+            passage_sentence_pause = st.number_input("Pause after sentence (seconds)", min_value=1.0, max_value=10.0, value=2.0, step=0.5)
+            passage_repeat_pause = st.number_input("Pause after repeat (seconds)", min_value=0.5, max_value=5.0, value=1.0, step=0.5)
             
             # Passage Speed Control
             passage_speed_adj = st.slider("Passage Speed Adjustment (%)", min_value=-50, max_value=50, value=-20, step=10, key="passage_speed")
@@ -410,9 +412,9 @@ with tab1:
                 
                 with st.spinner("Generating Audio..."):
                     if loop.is_running():
-                        vocab_path, passage_path = loop.run_until_complete(process_audio_generation(vocab_list, passage_text, speed_str, passage_speed_str, vocab_repeats, vocab_silence, passage_repeats, shuffle_vocab, detected_lang, selected_voice, provider_code))
+                        vocab_path, passage_path = loop.run_until_complete(process_audio_generation(vocab_list, passage_text, speed_str, passage_speed_str, vocab_repeats, vocab_silence, passage_repeats, passage_sentence_pause, passage_repeat_pause, shuffle_vocab, detected_lang, selected_voice, provider_code))
                     else:
-                         vocab_path, passage_path = loop.run_until_complete(process_audio_generation(vocab_list, passage_text, speed_str, passage_speed_str, vocab_repeats, vocab_silence, passage_repeats, shuffle_vocab, detected_lang, selected_voice, provider_code))
+                         vocab_path, passage_path = loop.run_until_complete(process_audio_generation(vocab_list, passage_text, speed_str, passage_speed_str, vocab_repeats, vocab_silence, passage_repeats, passage_sentence_pause, passage_repeat_pause, shuffle_vocab, detected_lang, selected_voice, provider_code))
 
                 st.session_state["generated_vocab_path"] = vocab_path
                 st.session_state["generated_passage_path"] = passage_path

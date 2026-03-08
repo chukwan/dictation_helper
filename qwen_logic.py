@@ -98,9 +98,9 @@ def generate_voice(text, speaker, language="Auto"):
         return None
 
 def get_speakers():
-    model = load_model()
-    if model:
-        return model.get_supported_speakers()
-    return []
+    global _model
+    if _model is not None:
+        return _model.get_supported_speakers()
+    return ['aiden', 'dylan', 'eric', 'ono_anna', 'ryan', 'serena', 'sohee', 'uncle_fu', 'vivian']
 
 

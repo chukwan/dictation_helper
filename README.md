@@ -1,16 +1,19 @@
 # Dictation Buddy 🎧
 
-Dictation Buddy is a Streamlit-based application designed to help students practice dictation. It converts photos of dictation sheets (vocabulary and passages) into practice audio files using Google Gemini for text extraction and Edge TTS for high-quality speech generation.
+Dictation Buddy is a Streamlit-based application designed to help students practice dictation. It converts photos of dictation sheets (vocabulary and passages) into practice audio files using Google Gemini for text extraction and Edge TTS/Google Cloud TTS for high-quality speech generation.
 
 ## Features
 
--   **Image-to-Text**: Upload a photo of your dictation sheet, and the app automatically extracts vocabulary and passage text using Google Gemini 2.0 Flash.
+-   **Image-to-Text**: Upload a photo of your dictation sheet, and the app automatically extracts vocabulary and passage text using Google Gemini 3 Flash.
 -   **Multi-language Support**: Automatically detects English and Traditional Chinese.
     -   **Voice Selection**: Choose from multiple high-quality neural voices (e.g., HsiaoChen, HsiaoYu for Mandarin; Aria, Guy for English).
     -   **Punctuation Reading**: Reads punctuation out loud (e.g., "comma", "period", "逗號", "句號") for effective dictation practice.
 -   **Customizable Audio Generation**:
     -   **Vocabulary**: Configurable repeats and silence duration between words. Option to shuffle word order.
-    -   **Passage**: Configurable sentence repeats and independent reading speed control.
+    -   **Passage**: Configurable sentence repeats, independent reading speed control, and customizable pause durations (between both sentences and sentence repeats).
+-   **Conversation / Script Generation**:
+    -   **Conversation Generator**: Analyze transcripts using Gemini 3 to automatically split dialogue by speaker and generate multi-voice audio.
+    -   **Qwen Script Builder**: Utilize the on-device `Qwen3-TTS-12Hz-1.7B-CustomVoice` model for offline, highly expressive dialogue generation with custom speakers (lazy-loaded to save memory).
 -   **Instant Previews**: Listen to individual words or sentences immediately after upload.
 -   **Recordings Library**: Save your generated practice sessions to a local library for later use.
 -   **Downloadable Audio**: Download generated MP3 files for offline practice.
@@ -72,7 +75,8 @@ To force a rebuild of the environment (e.g., after requirement changes):
 ## Technologies Used
 
 -   **Streamlit**: Web interface.
--   **Google Gemini API**: OCR and text extraction.
--   **edge-tts**: Text-to-Speech generation.
+-   **Google Gemini API**: OCR text extraction and transcript analysis (using `gemini-3-flash-preview`).
+-   **edge-tts & Google Cloud TTS**: Text-to-Speech generation.
+-   **Qwen3-TTS**: On-device voice generation.
 -   **Pydub**: Audio manipulation (stitching, silence).
 -   **Pytest**: Testing framework.

@@ -216,7 +216,7 @@ def save_audio_file(source_path, name, suffix):
     return dest_path
 
 
-async def process_passage(passage_text, rate, sentence_repeats=3, language="en", voice="en-US-AriaNeural", provider="edge"):
+async def process_passage(passage_text, rate, sentence_repeats=3, language="en", voice="en-US-AriaNeural", provider="edge", sentence_pause_sec=2.0, repeat_pause_sec=1.0):
     """
     Generates audio for passage with punctuation reading and sentence repetition.
     Returns path to generated file.
@@ -226,8 +226,8 @@ async def process_passage(passage_text, rate, sentence_repeats=3, language="en",
 
     temp_dir = tempfile.gettempdir()
     combined_passage_audio = AudioSegment.empty()
-    silence_between_sentences = create_silence(2000) # 2 seconds between sentences
-    silence_between_repeats = create_silence(1000) # 1 second between repeats of same sentence
+    silence_between_sentences = create_silence(sentence_pause_sec * 1000) # Configurable silence between sentences
+    silence_between_repeats = create_silence(repeat_pause_sec * 1000) # Configurable silence between repeats of same sentence
 
     sentences = split_into_sentences(passage_text)
 
@@ -260,7 +260,7 @@ def extract_text_from_image(image_bytes):
     from PIL import Image
     
     try:
-        model = genai.GenerativeModel('gemini-2.5-flash')
+        model = genai.GenerativeModel('gemini-3-flash-preview')
         
         prompt = """
         Analyze this image and extract the text for a dictation practice session.
@@ -289,20 +289,24 @@ def extract_text_from_image(image_bytes):
         
         response = model.generate_content([prompt, image])
         text = response.text
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] Extracted text from Gemini: {text}")
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Raw Gemini response: {text}")
         
         # Clean up potential markdown code blocks
-        if text.startswith("```json"):
-            text = text[7:]
-        if text.endswith("```"):
-            text = text[:-3]
+        cleaned_text = text.strip()
+        if cleaned_text.startswith("```json"):
+            cleaned_text = cleaned_text[7:]
+        if cleaned_text.endswith("```"):
+            cleaned_text = cleaned_text[:-3]
+        cleaned_text = cleaned_text.strip()
             
-        return json.loads(text)
+        return json.loads(cleaned_text)
     except Exception as e:
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Error extracting text: {e}")
+        if 'text' in locals():
+             print(f"[{datetime.now().strftime('%H:%M:%S')}] Full response text that failed: {text}")
         return None
 
-async def process_audio_generation(vocab_list, passage_text, vocab_rate, passage_rate, vocab_repeats, vocab_silence, passage_repeats, shuffle_vocab, language, voice, provider):
+async def process_audio_generation(vocab_list, passage_text, vocab_rate, passage_rate, vocab_repeats, vocab_silence, passage_repeats, passage_sentence_pause, passage_repeat_pause, shuffle_vocab, language, voice, provider):
     """
     Orchestrates the audio generation process.
     Returns paths to the generated temporary files.
@@ -316,7 +320,7 @@ async def process_audio_generation(vocab_list, passage_text, vocab_rate, passage
 
     # --- Process Passage ---
     if passage_text:
-        passage_audio_path = await process_passage(passage_text, passage_rate, sentence_repeats=passage_repeats, language=language, voice=voice, provider=provider)
+        passage_audio_path = await process_passage(passage_text, passage_rate, sentence_repeats=passage_repeats, language=language, voice=voice, provider=provider, sentence_pause_sec=passage_sentence_pause, repeat_pause_sec=passage_repeat_pause)
 
     return vocab_audio_path, passage_audio_path
 # --- New Conversation Logic ---
