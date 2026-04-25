@@ -72,12 +72,15 @@ def test_save_audio_file():
          patch('shutil.copy2') as mock_copy, \
          patch('os.path.exists') as mock_exists, \
          patch('os.getcwd') as mock_getcwd:
-         
-        mock_exists.return_value = True
+
+        # Source exists, destination does not (new file scenario)
+        def exists_side_effect(path):
+            return path == "/tmp/source.mp3"
+        mock_exists.side_effect = exists_side_effect
         mock_getcwd.return_value = "/fake/cwd"
-        
+
         path = save_audio_file("/tmp/source.mp3", "My Recording", "vocab")
-        
+
         mock_makedirs.assert_called_with(os.path.join("/fake/cwd", "recordings"), exist_ok=True)
         mock_copy.assert_called()
         assert "My_Recording_vocab.mp3" in path

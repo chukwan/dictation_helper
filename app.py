@@ -160,9 +160,18 @@ with tab1:
         st.info(f"Editing Loaded Session: **{st.session_state.get('loaded_session_name', 'Unknown')}**")
         if st.button("Start New Session (Clear Logic)", type="secondary"):
             # Clear all session state related to current session
-            keys_to_clear = ["extracted_data", "vocab_list", "loaded_session_id", "loaded_session_name", "last_uploaded_files", "preview_cache"]
+            keys_to_clear = [
+                "extracted_data", "vocab_list", "loaded_session_id", "loaded_session_name",
+                "last_uploaded_files", "preview_cache",
+                "generated_vocab_path", "generated_passage_path",
+                "passage_text_area"
+            ]
             for k in keys_to_clear:
                 if k in st.session_state:
+                    del st.session_state[k]
+                    
+            for k in list(st.session_state.keys()):
+                if k.startswith("vocab_") and k != "vocab_list":
                     del st.session_state[k]
             st.rerun()
     else:
@@ -358,17 +367,19 @@ with tab1:
             
             st.markdown("**Passage Settings**")
             passage_repeats = st.number_input("Repeats per sentence", min_value=1, max_value=5, value=3)
-            passage_sentence_pause = st.number_input("Pause after sentence (seconds)", min_value=1.0, max_value=10.0, value=2.0, step=0.5)
-            passage_repeat_pause = st.number_input("Pause after repeat (seconds)", min_value=0.5, max_value=5.0, value=1.0, step=0.5)
+            passage_sentence_pause = st.number_input("Pause after sentence (seconds)", min_value=1.0, max_value=20.0, value=2.0, step=1.0)
+            passage_repeat_pause = st.number_input("Pause after repeat (seconds)", min_value=0.5, max_value=30.0, value=1.0, step=1.0)
             
             # Passage Speed Control
             passage_speed_adj = st.slider("Passage Speed Adjustment (%)", min_value=-50, max_value=50, value=-20, step=10, key="passage_speed")
             passage_speed_str = f"{passage_speed_adj:+d}%"
 
+            # Always define sentences so save flow can use it
+            sentences = split_into_sentences(passage_text) if passage_text else []
+
             # Passage Previews
-            if passage_text:
+            if sentences:
                 st.markdown("**Sentence Previews**")
-                sentences = split_into_sentences(passage_text)
 
                 for i, sentence in enumerate(sentences):
                     c1, c2 = st.columns([3, 1])
@@ -488,7 +499,7 @@ with tab1:
                                     session_id=loaded_session_id,
                                     vocab_list=vocab_list,
                                     vocab_audio_path=vocab_audio_path,
-                                    sentences=sentences if 'sentences' in locals() else [],
+                                    sentences=sentences,
                                     passage_audio_path=passage_audio_path,
                                     language=detected_lang
                                 )
@@ -499,7 +510,7 @@ with tab1:
                                     name=save_name,
                                     vocab_list=vocab_list,
                                     vocab_audio_path=vocab_audio_path,
-                                    sentences=sentences if 'sentences' in locals() else [],
+                                    sentences=sentences,
                                     passage_audio_path=passage_audio_path,
                                     language=detected_lang
                                 )
@@ -528,6 +539,13 @@ with tab2:
                 
                 # Load Session Button
                 if st.button("Load Session", key=f"load_{session_id}"):
+                    # Clear widget state from previous session
+                    if "passage_text_area" in st.session_state:
+                        del st.session_state["passage_text_area"]
+                    for k in list(st.session_state.keys()):
+                        if k.startswith("vocab_") and k != "vocab_list":
+                            del st.session_state[k]
+
                     # Set session state variables
                     st.session_state["vocab_list"] = vocab_list
                     # Reconstruct extracted_data structure for consistency
@@ -555,7 +573,9 @@ with tab2:
                         st.audio(session["vocab_audio_path"], format="audio/mp3")
                         with open(session["vocab_audio_path"], "rb") as f:
                             st.download_button(f"Download Vocab Audio", f, file_name=f"{session_name}_vocab.mp3", key=f"dl_vocab_{session_id}")
-                
+                    elif session["vocab_audio_path"]:
+                        st.warning(f"Audio file missing: {os.path.basename(session['vocab_audio_path'])}")
+
                 # Passage Section
                 if sentences:
                     st.subheader("Passage")
@@ -566,11 +586,27 @@ with tab2:
                         st.audio(session["passage_audio_path"], format="audio/mp3")
                         with open(session["passage_audio_path"], "rb") as f:
                             st.download_button(f"Download Passage Audio", f, file_name=f"{session_name}_passage.mp3", key=f"dl_passage_{session_id}")
-                
+                    elif session["passage_audio_path"]:
+                        st.warning(f"Audio file missing: {os.path.basename(session['passage_audio_path'])}")
+
                 st.divider()
-                if st.button("Delete Session", key=f"del_{session_id}", type="secondary"):
-                    database.delete_session(session_id)
-                    st.rerun()
+                confirm_key = f"confirm_del_{session_id}"
+                if st.session_state.get(confirm_key, False):
+                    st.warning(f"Are you sure you want to delete '{session_name}'? This cannot be undone.")
+                    col_yes, col_no = st.columns(2)
+                    with col_yes:
+                        if st.button("Yes, Delete", key=f"yes_del_{session_id}", type="primary"):
+                            database.delete_session(session_id)
+                            del st.session_state[confirm_key]
+                            st.rerun()
+                    with col_no:
+                        if st.button("Cancel", key=f"cancel_del_{session_id}"):
+                            del st.session_state[confirm_key]
+                            st.rerun()
+                else:
+                    if st.button("Delete Session", key=f"del_{session_id}", type="secondary"):
+                        st.session_state[confirm_key] = True
+                        st.rerun()
 
 with tab4:
     st.header("Qwen3-TTS Script Builder 🎙️")

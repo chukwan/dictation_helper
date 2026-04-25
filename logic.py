@@ -211,7 +211,18 @@ def save_audio_file(source_path, name, suffix):
         
     filename = f"{safe_name}_{suffix}.mp3"
     dest_path = os.path.join(recordings_dir, filename)
-    
+
+    # Avoid overwriting a different session's audio file
+    if os.path.exists(dest_path):
+        try:
+            if os.path.samefile(source_path, dest_path):
+                return dest_path  # Re-saving the same file, no action needed
+        except (OSError, ValueError):
+            pass
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"{safe_name}_{suffix}_{timestamp}.mp3"
+        dest_path = os.path.join(recordings_dir, filename)
+
     shutil.copy2(source_path, dest_path)
     return dest_path
 

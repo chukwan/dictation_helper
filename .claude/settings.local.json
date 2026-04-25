@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -r \"json\\\\|pickle\\\\|csv\\\\|persist\" /j/Development/Python/dictation-helper/*.py)",
+      "Bash(python3:*)",
+      "Bash(python:*)"
+    ]
+  }
+}
